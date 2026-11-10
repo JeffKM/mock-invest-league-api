@@ -12,10 +12,12 @@ if ! mkdir "$LOCK" 2>/dev/null; then
   echo "다른 테스트가 실행 중입니다($LOCK). 끝난 뒤 다시 실행하세요." >&2
   exit 2
 fi
+# 실행 전부터 있던 Gradle 프로세스(다른 프로젝트)는 건드리지 않고, 이번 실행이 만든 것만 정리한다
+BEFORE="$(pgrep -f 'GradleDaemon|GradleWorkerMain' | tr '\n' ' ')"
 cleanup() {
-  ./gradlew --stop >/dev/null 2>&1 || true
-  pkill -9 -f 'GradleDaemon.*mock-invest' 2>/dev/null || true
-  pkill -9 -f 'GradleWorkerMain' 2>/dev/null || true
+  for p in $(pgrep -f 'GradleDaemon|GradleWorkerMain'); do
+    case " $BEFORE " in *" $p "*) ;; *) kill -9 "$p" 2>/dev/null || true ;; esac
+  done
   rmdir "$LOCK" 2>/dev/null || true
 }
 trap cleanup EXIT
@@ -26,7 +28,9 @@ pid=$!
 wd=$!
 wait "$pid"
 code=$?
+pkill -P "$wd" 2>/dev/null || true   # 워치독 안의 sleep 까지 정리
 kill "$wd" 2>/dev/null || true
+wait "$wd" 2>/dev/null || true
 
 if [ "$code" -eq 0 ]; then
   echo "테스트 통과. 커버리지 리포트: build/reports/jacoco/test/html/index.html"
