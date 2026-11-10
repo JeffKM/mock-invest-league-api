@@ -20,7 +20,9 @@
 | 7 | Git 저장소 | 완료 |
 | 8 | Company 엔티티 | 완료 |
 | 9 | CompanyRepository와 테스트 | 완료 |
-| 10 | 나머지 엔티티 → 시장가 주문 | 다음 |
+| 10 | 나머지 엔티티(User·Contest·ContestListing·Participant·Holding·Order·CashLedger) | 완료 |
+| 11 | 테스트 구조(공용 컨테이너·단위 테스트·매핑 테스트) | 완료 |
+| 12 | 시장가 주문 서비스(직접 짜기) | 다음 |
 
 6주 전체 일정:
 
@@ -74,13 +76,15 @@
 | I2 | 보유 수량은 0 이상, 가진 것보다 많이 못 판다 | 공매도는 범위 밖 |
 | I3 | 금액은 원 단위 정수(`long`) | `double`은 0.1 + 0.2 ≠ 0.3 같은 오차가 생긴다 |
 | I4 | 수수료 = 체결 금액 × 수수료율, 원 미만 버림 | 반올림 규칙이 여러 곳에 흩어지면 1원씩 어긋난다. 계산 함수는 한 곳에만 둔다 |
-| I5 | `현금 + 묶인 현금 = 초기 자금 + 원장 합계` | 돈이 생기거나 사라지지 않았음을 증명하는 식 |
+| I5 | `현금 + 묶인 현금 = 원장 합계`(초기 자금도 INITIAL 로 원장에 있음) | 돈이 생기거나 사라지지 않았음을 증명하는 식 |
 | I6 | 같은 `Idempotency-Key` 주문은 한 번만 실행 | 네트워크 재시도로 같은 요청이 두 번 와도 두 번 사면 안 된다 |
 | I7 | 출석 보너스는 하루 1번 | 중복 지급 방지 |
 | I8 | 틱 가격은 전날 종가 ±제한폭 안 | 가격 엔진 버그로 말이 안 되는 가격이 나오는 것 방지 |
 | I9 | 진행 중 대회, 장 시간 안에서만 주문 | 장 밖 주문은 체결 기준 가격이 없다 |
 | I10 | 지정가 주문은 체결·취소·만료 중 정확히 하나로 끝난다. 배치를 두 번 돌려도 같다 | 배치 재실행 시 이중 체결 방지 |
 | I11 | 미래 틱 가격·공시는 볼 수 없다 | 가격 경로를 미리 만들어 두므로, 조회 조건이 틀리면 미래가 새어 나간다 |
+
+> **정정(10단계 때 발견):** 처음에는 I5를 "현금 = 초기 자금 + 원장 합계"로 적었다. 그런데 참가할 때 초기 자금을 원장에 `INITIAL`로 기록하므로, 그렇게 쓰면 초기 자금이 두 번 더해진다. "현금 + 묶인 현금 = 원장 합계"가 맞다. 규칙 문서와 코드가 어긋나면 테스트가 엉뚱한 값을 기대하게 되므로, 식은 한 군데(docs/01)에 정하고 나머지는 그 식을 따른다.
 
 ## 핵심 포인트: DB 제약만으로는 동시성 버그를 못 막는다
 
@@ -625,29 +629,268 @@ class CompanyRepositoryTest {
 
 ---
 
-# 10단계. 다음 할 일
+# 10단계. 나머지 엔티티
 
-## 10-1. 나머지 엔티티
-`Contest`, `Participant`, `Holding`(복합키), `Order`, `CashLedger`.
-- 미리 생각할 것:
-  - `Holding`의 복합키를 `@IdClass`로 할지, `@EmbeddedId`로 할지
-  - 연관관계는 처음엔 `@ManyToOne(fetch = LAZY)`만 쓰고 양방향은 만들지 않는다. 기본 `EAGER`는 원치 않는 조인과 N+1을 부른다
+## 한 일
+| 패키지 | 엔티티 | 테이블 | 핵심 |
+|---|---|---|---|
+| `user` | `User` | `users` | 닉네임, 생성 시각 |
+| `contest` | `Contest`, `ContestStatus` | `contests` | 대회 규칙, 상태 전이 |
+| `contest` | `ContestListing`, `ContestListingId` | `contest_listings` | **복합키**, 1주차 임시 현재가 |
+| `account` | `Participant` | `participants` | 잔고, 출금·입금 규칙 |
+| `account` | `Holding`, `HoldingId` | `holdings` | **복합키**, 평균 매입가 |
+| `account` | `CashLedger`, `LedgerEntryType` | `cash_ledger` | 부호 규칙, 추가만 |
+| `order` | `Order`, `OrderSide`, `OrderType`, `OrderStatus` | `orders` | 상태 전이(한 번만) |
 
-## 10-2. 시장가 주문(핵심, 직접 짜기)
-- 1주차는 가격 엔진이 없으므로 임시 현재가 = `contest_listings.base_price`.
+나중에 만드는 것: `PriceTick`·`Disclosure`(3주차 가격 엔진), `Attendance`(출석 보너스).
+
+## 10-1. 연관관계: `@ManyToOne(fetch = LAZY)` 단방향만
+
+```java
+@ManyToOne(fetch = FetchType.LAZY, optional = false)
+@JoinColumn(name = "contest_id")
+private Contest contest;
+```
+
+| 코드 | 왜 | 다르게 하면 |
+|---|---|---|
+| `@ManyToOne` | 참가자 여러 명 → 대회 하나. FK(`contest_id`)를 가진 쪽에 둔다 | |
+| `fetch = LAZY` | 참가자를 읽을 때 대회까지 바로 조인하지 않는다. `getContest().getName()`처럼 실제로 쓸 때 쿼리가 나간다 | `@ManyToOne`의 기본값은 **EAGER**다. 참가자 목록 100건을 읽으면 대회 조회가 따라붙어 N+1이 생기기 쉽다 |
+| `optional = false` | 대회 없는 참가자는 없다. 스키마의 `not null`과 맞춘다 | |
+| 단방향만 | `Contest`에 `List<Participant>`를 두지 않는다 | 양방향은 양쪽 값을 같이 맞춰야 하고, 실수로 대회 하나에 참가자 만 명을 통째로 불러오기 쉽다. 필요해질 때 추가한다 |
+
+## 10-2. 복합키: `@EmbeddedId` + `@MapsId`
+
+`holdings`의 기본키는 `(participant_id, company_id)`다. 한 계좌에 한 종목은 한 줄뿐이라 이 두 값이 자연스러운 키다.
+
+```java
+@Embeddable
+public class HoldingId implements Serializable {
+  @Column(name = "participant_id") private Long participantId;
+  @Column(name = "company_id")     private Long companyId;
+  // equals, hashCode 필수
+}
+
+@Entity
+public class Holding {
+  @EmbeddedId
+  private HoldingId id;
+
+  @MapsId("participantId")
+  @ManyToOne(fetch = FetchType.LAZY, optional = false)
+  @JoinColumn(name = "participant_id")
+  private Participant participant;
+  ...
+}
+```
+
+| 코드 | 왜 |
+|---|---|
+| `@Embeddable` 키 클래스 | 키 두 개를 하나의 값 객체로 묶는다 |
+| `Serializable` | JPA 명세가 복합키 클래스에 요구한다 |
+| `equals`/`hashCode` | 영속성 컨텍스트(1차 캐시)는 키로 엔티티를 찾는다. 값이 같은 키를 같은 키로 인식하려면 값 비교가 필요하다. 없으면 같은 행을 다른 엔티티로 취급한다 |
+| `@MapsId("participantId")` | "키 안의 `participantId`는 이 연관관계(`participant`)의 id와 같다"는 뜻. 같은 컬럼을 키와 FK가 함께 쓴다 |
+| `@IdClass`가 아닌 이유 | `@IdClass`는 엔티티에 키 필드를 따로 또 적어야 한다. `@EmbeddedId`는 키를 객체 하나로 다뤄 `findById(new HoldingId(...))`가 깔끔하다 |
+
+- 리포지토리 타입: `JpaRepository<Holding, HoldingId>`. id 타입 자리에 키 클래스가 들어간다.
+- 키 안의 필드로 찾기: `findByIdParticipantId(...)` → `id.participantId` 경로.
+- 알아 둘 점: id를 직접 넣어 만든 엔티티는 `save()` 때 Spring Data가 "이미 있는 것"으로 보고 `merge`를 부른다. 그래서 INSERT 전에 SELECT가 한 번 더 나간다. 성능이 문제가 되면 `Persistable`로 새 엔티티임을 알려 줄 수 있다(4주차 쿼리 로그 확인 때 볼 것).
+
+## 10-3. 엔티티가 스스로 규칙을 지킨다
+
+### `Participant.withdraw`
+```java
+public void withdraw(long amount) {
+  requirePositive(amount);
+  if (cash < amount) {
+    throw new BusinessException(ErrorCode.INSUFFICIENT_CASH);
+  }
+  cash -= amount;
+}
+
+public void deposit(long amount) {
+  requirePositive(amount);
+  cash = Math.addExact(cash, amount);
+}
+```
+| 코드 | 왜 |
+|---|---|
+| 잔고 변경을 엔티티 메서드로 | `setCash()`를 열어 두면 서비스 어디서든 검증 없이 바꿀 수 있다. 바꾸는 길을 하나로 만들면 I1을 한 곳에서 지킨다 |
+| 업무 위반은 `BusinessException` | 사용자 잘못(잔고 부족)이라 409로 응답한다 |
+| 0 이하 금액은 `IllegalArgumentException` | 사용자가 아니라 **프로그램 버그**다. 500으로 드러나야 고친다 |
+| `Math.addExact` | `long`이 넘치면 조용히 음수가 된다. `addExact`는 넘치는 순간 예외를 던진다 |
+
+### `@Version`을 아직 붙이지 않은 이유
+```java
+/** 2주차 낙관적 락 실험용 컬럼. 지금은 일부러 @Version 을 붙이지 않는다. */
+@Column(nullable = false)
+private long version;
+```
+붙이는 순간 낙관적 락이 켜진다. 2주차에는 먼저 **락이 없을 때 갱신 손실이 실제로 생기는 것**을 테스트로 재현하고, 그다음 락 세 가지를 비교한다. 출발점이 있어야 비교 수치가 의미 있다.
+
+### `Holding`의 평균 매입가
+```java
+public long decrease(long qty) {
+  if (availableQuantity() < qty) throw new BusinessException(ErrorCode.INSUFFICIENT_QUANTITY);
+  long removedCost = (qty == quantity)
+      ? totalCost
+      : Math.multiplyExact(totalCost, qty) / quantity;
+  quantity -= qty;
+  totalCost -= removedCost;
+  return removedCost;
+}
+```
+| 코드 | 왜 |
+|---|---|
+| 평균가가 아니라 `totalCost`(매입 총액)를 저장 | 평균가를 저장하면 살 때마다 나눗셈 오차가 쌓인다. 총액과 수량만 두고 평균은 필요할 때 계산한다 |
+| 일부 매도는 비율대로 원가를 덜어 냄 | 20주(220,000원) 중 5주를 팔면 55,000원을 덜어 내 평균가 11,000원이 유지된다 |
+| **전부 팔면 원가도 전부** | 3주를 100,000원에 사고 1주, 2주로 나눠 팔면 버림 오차로 1원이 남을 수 있다. 마지막에 전부를 덜어 내 0으로 맞춘다 |
+| 곱셈 먼저, 나눗셈 나중 | `totalCost / quantity * qty`는 먼저 버림이 일어나 오차가 커진다 |
+| `availableQuantity()` = 보유 − 묶인 수량 | 지정가 매도로 묶인 주식은 또 팔 수 없다(I2) |
+
+### `CashLedger.record`: 부호는 종류가 정한다
+```java
+public static CashLedger record(Participant participant, LedgerEntryType type, long size, Order order) {
+  if (size <= 0) throw new IllegalArgumentException(...);
+  entry.amount = type.isInflow() ? size : -size;
+  ...
+}
+```
+부르는 쪽이 `-840000`처럼 부호를 직접 넣게 하면 실수로 `BUY`를 +로 남길 수 있다. 크기만 받고 부호는 `LedgerEntryType`(`INITIAL`·`SELL`·`BONUS`는 +, `BUY`·`FEE`는 −)이 붙인다. 실수할 수 없는 구조로 만드는 것이 검증 코드를 늘리는 것보다 낫다.
+
+### `Order`: 상태는 PENDING에서 한 번만 바뀐다
+```java
+public void fill(long price, long fee, int tick, Instant at) {
+  requirePending("체결");
+  this.status = OrderStatus.FILLED;
+  ...
+}
+private void requirePending(String action) {
+  if (status != OrderStatus.PENDING) throw new IllegalStateException(...);
+}
+```
+- 이미 체결된 주문을 또 체결하려는 건 버그다. 엔티티가 막는다(I10).
+- **단, 이것만으로는 동시성은 못 막는다.** 배치 두 개가 같은 주문을 동시에 읽으면 둘 다 PENDING으로 보인다. 3주차에 `update orders set status='FILLED' where id=? and status='PENDING'`(조건부 UPDATE)로 DB 수준에서 한 번만 성공하게 만든다.
+- 생성은 `Order.market(...)`, `Order.limit(...)` 정적 팩토리로만 한다. 시장가 주문에 지정가가 들어가는 조합을 만들 수 없다(스키마 CHECK와 같은 규칙).
+
+### `Contest`: 기본값은 상수로
+스키마에 `default 10000000`이 있어도, JPA는 INSERT할 때 모든 컬럼 값을 보낸다. 그래서 DB 기본값이 쓰이지 않는다. Java 쪽에 `DEFAULT_INITIAL_CASH` 같은 상수를 두고 `Contest.withDefaults(...)`에서 채운다. **스키마 기본값과 상수가 같아야 한다**는 점을 주석으로 남겼다.
+
+### `@CreationTimestamp`
+`createdAt`, `joinedAt`은 저장 시점에 Hibernate가 채운다. 생성자에서 `Instant.now()`를 부르면 테스트에서 시각을 통제하기 어렵다. 저장 시각처럼 업무 규칙과 관계없는 값은 Hibernate에 맡긴다. 반면 장 시간 판단처럼 규칙에 쓰는 시각은 `Clock`을 쓴다.
+
+## 외울 것
+- **Q. `@ManyToOne`의 기본 fetch는? 왜 LAZY로 바꾸나?** → 기본은 EAGER. 목록 조회 때 연관 엔티티 조회가 줄줄이 따라붙는 N+1을 막고, 필요한 곳에서만 fetch join으로 가져오기 위해서.
+- **Q. 연관관계를 왜 단방향으로만?** → 양방향은 양쪽을 함께 맞춰야 하고 컬렉션을 통째로 불러오는 실수가 쉽다. 조회가 필요하면 리포지토리 쿼리로 해결한다.
+- **Q. 복합키 클래스에 `equals`/`hashCode`가 왜 필요한가?** → 영속성 컨텍스트가 키로 엔티티를 찾기 때문. 값이 같은 키를 같은 키로 봐야 같은 행을 하나의 엔티티로 관리한다.
+- **Q. `@MapsId`는 무엇인가?** → 복합키의 한 필드를 연관관계의 id로 채우라는 표시. 키와 FK가 같은 컬럼을 공유한다.
+- **Q. 잔고를 왜 setter가 아니라 메서드로 바꾸나?** → 변경 경로를 하나로 만들어 규칙(I1)을 한 곳에서 지키려고. 객체가 자기 상태의 일관성을 책임진다.
+- **Q. 업무 예외와 `IllegalArgumentException`을 어떻게 나누나?** → 사용자가 고칠 수 있는 상황(잔고 부족)은 업무 예외(409), 코드가 잘못 부른 경우(금액 0)는 프로그램 오류(500).
+- **Q. 평균가를 왜 저장하지 않나?** → 나눗셈 오차가 누적된다. 총액과 수량을 저장하고 평균은 계산한다.
+- **Q. 엔티티의 상태 검사만으로 이중 체결을 막을 수 있나?** → 한 트랜잭션 안에서는 막지만, 동시에 두 트랜잭션이 읽으면 못 막는다. 조건부 UPDATE나 락이 필요하다.
+- **Q. 스키마 default가 있는데 Java 상수가 왜 필요한가?** → JPA INSERT는 모든 컬럼 값을 명시해 보내 DB 기본값이 적용되지 않는다.
+
+---
+
+# 11단계. 테스트 구조
+
+## 11-1. 공용 컨테이너 설정
+
+```java
+@TestConfiguration(proxyBeanMethods = false)
+public class PostgresTestConfig {
+  @Bean
+  @ServiceConnection
+  PostgreSQLContainer<?> postgresContainer() {
+    return new PostgreSQLContainer<>("postgres:16-alpine");
+  }
+}
+```
+테스트 클래스에서 `@Import(PostgresTestConfig.class)`로 쓴다.
+
+- **왜 바꿨나:** 전에는 테스트 클래스마다 `@Container static ...`을 두어서 클래스마다 컨테이너를 새로 띄웠다. 테스트 클래스가 늘수록 느려진다.
+- **어떻게 빨라지나:** 컨테이너를 Spring 빈으로 두면, 설정이 같은 테스트끼리 **Spring 테스트 컨텍스트 캐시**를 공유해 컨테이너도 재사용한다.
+
+## 11-2. 단위 테스트와 매핑 테스트를 나눈다
+
+| 종류 | 파일 | DB | 무엇을 보나 | 속도 |
+|---|---|---|---|---|
+| 단위 | `ParticipantTest`, `HoldingTest`, `CashLedgerTest`, `OrderTest`, `ContestTest` | 없음 | 엔티티 메서드의 규칙(잔고 부족, 원가 계산, 부호, 상태 전이) | 밀리초 |
+| 매핑 | `EntityMappingTest`, `CompanyRepositoryTest` | 실제 PostgreSQL | 저장 → 비우기 → 다시 읽기, 제약 조건, 쿼리 메서드 | 초 |
+| 기동 | `MockLeagueApplicationTests` | 실제 PostgreSQL | 모든 엔티티가 스키마 검증을 통과해 앱이 뜨는지 | 초 |
+
+규칙은 DB 없이 빠르게, DB와 맞물리는 부분만 컨테이너로 확인한다.
+
+## 11-3. 매핑 테스트의 핵심: `flush` + `clear`
+
+```java
+private void flushAndClear() {
+  em.flush();  // 지금까지 모은 변경을 SQL로 DB에 보낸다
+  em.clear();  // 1차 캐시를 비운다
+}
+```
+`clear` 없이 다시 조회하면 JPA는 DB에 가지 않고 **1차 캐시에 있던 같은 객체**를 돌려준다. 그러면 "DB에 제대로 저장됐는가"를 검증하지 못한다. 비우고 읽어야 진짜 DB 왕복이다.
+
+## 11-4. 겪은 일 1: 중복 키 오류가 `flush`가 아니라 `save`에서 났다
+
+```java
+orderRepository.save(Order.market(participant, sbsi, OrderSide.BUY, 1, "dup", DAY, 0));
+
+// IDENTITY 전략은 id 를 DB에서 받아야 하므로 save() 순간 INSERT 가 바로 나간다
+assertThatThrownBy(() -> orderRepository.save(Order.market(..., "dup", ...)))
+    .isInstanceOf(DataIntegrityViolationException.class);
+```
+- 보통 JPA는 변경을 모았다가 `flush` 때 SQL을 보낸다(쓰기 지연).
+- 그런데 `IDENTITY`는 INSERT를 해야 id를 알 수 있어서, `save()` 순간 바로 INSERT한다. 쓰기 지연이 적용되지 않는다.
+- 그래서 같은 키의 두 번째 주문은 `save()`에서 바로 실패한다. 리포지토리를 통해 나온 예외는 Spring이 `DataIntegrityViolationException`으로 바꿔 준다.
+
+## 11-5. 겪은 일 2: 단위 테스트에서 `Company`가 필요했다
+
+`Holding.empty(participant, company)`는 회사의 id를 읽는다. `null`을 넘기면 NullPointerException이 난다. `Company`는 시드로만 만들어져 공개 생성자가 없다. 그래서 단위 테스트에서는 **Mockito의 가짜 객체**를 넘겼다.
+```java
+return Holding.empty(p, mock(Company.class));
+```
+테스트를 위해 운영 코드에 공개 생성자를 추가하지 않고, 테스트 도구로 해결했다.
+
+## 11-6. DB 제약도 테스트한다
+
+```java
+@Test
+void I1_DB의_CHECK_제약은_서비스를_우회한_음수_잔고도_거부한다() {
+  em.createNativeQuery("update participants set cash = -1 where id = :id") ... // 예외
+}
+```
+엔티티 규칙을 우회해 SQL로 직접 음수를 넣어도 DB가 거부하는지 확인한다. "마지막 방어선"이 실제로 있는지 증명하는 테스트다.
+
+## 결과
+테스트 **34개** 통과(단위 23, 매핑·리포지토리 10, 기동 1).
+
+## 외울 것
+- **Q. 테스트에서 `flush`와 `clear`를 왜 하나?** → `flush`로 SQL을 실제로 보내고, `clear`로 1차 캐시를 비워야 다시 읽을 때 DB에서 가져온다. 안 하면 캐시의 같은 객체를 받아 저장 검증이 안 된다.
+- **Q. 쓰기 지연이란? `IDENTITY`에서는 왜 안 되나?** → 변경을 모았다가 flush 때 한 번에 보내는 것. `IDENTITY`는 INSERT해야 id가 생기므로 persist 시점에 바로 INSERT한다.
+- **Q. 단위 테스트와 통합 테스트를 왜 나누나?** → 규칙 검증은 DB 없이 빠르게 많이, DB 매핑·제약은 실제 DB로 적게. 실패했을 때 원인 범위도 좁아진다.
+- **Q. Testcontainers 컨테이너를 어떻게 여러 테스트가 공유하나?** → 컨테이너를 `@ServiceConnection` 빈으로 두고 `@Import`하면, Spring 테스트 컨텍스트 캐시가 같은 설정의 테스트끼리 재사용한다.
+
+---
+
+# 12단계. 다음 할 일: 시장가 주문(직접 짜기)
+
+- 1주차는 가격 엔진이 없으므로 임시 현재가 = `ContestListing.getBasePrice()`.
+- 이제 엔티티가 규칙을 갖고 있으므로, 서비스는 **순서와 트랜잭션 경계**만 책임진다.
 - `OrderService.placeMarketOrder` 하나의 `@Transactional` 안에서:
-  1. 검증(대회 진행 중, 장 시간, 수량 > 0)
-  2. 잔고·보유 변경
-  3. 주문 저장
-  4. 원장(`BUY`/`SELL`, `FEE`) 저장
+  1. 같은 키의 주문이 이미 있으면 그 결과를 돌려준다(`findByParticipantIdAndIdempotencyKey`)
+  2. 대회 진행 중·장 시간인지 확인(`Contest.isRunning()`, 장 시간 판단은 `Clock`으로 직접 작성)
+  3. 현재가로 금액·수수료 계산(수수료 함수는 직접 작성: 원 미만 버림)
+  4. 매수: `participant.withdraw(금액 + 수수료)`, `holding.increase(...)` / 매도: `holding.decrease(...)`, `participant.deposit(금액 − 수수료)`
+  5. `Order.market(...)` 저장 → `order.fill(...)`
+  6. 원장 `BUY`/`SELL`, `FEE` 기록
 - 일부러 아직 락을 걸지 않는다. 2주차에 동시 요청 100개로 갱신 손실을 재현한 뒤 세 가지 방법(비관적 락, 낙관적 락, 조건부 UPDATE)을 비교한다.
-
-## 10-3. 통합 테스트
-- 매수 후 현금 = 초기 자금 − 금액 − 수수료
-- 잔고 초과 매수 → 409, 잔고 그대로
-- 보유 초과 매도 → 409, 보유 그대로
-- I5: 여러 번 사고판 뒤 `cash + reserved_cash = 초기 자금 + Σ 원장`
-- 같은 `Idempotency-Key` 순차 두 번 → 주문 1건
+- 통합 테스트:
+  - 매수 후 현금 = 초기 자금 − 금액 − 수수료
+  - 잔고 초과 매수 → 409, 잔고 그대로(트랜잭션 롤백 확인)
+  - 보유 초과 매도 → 409, 보유 그대로
+  - I5: 여러 번 사고판 뒤 `cash + reserved_cash = Σ 원장`(INITIAL 포함)
+  - 같은 `Idempotency-Key` 순차 두 번 → 주문 1건
 
 ---
 
@@ -680,3 +923,9 @@ open build/reports/jacoco/test/html/index.html  # 커버리지
 | 원장(Ledger) | 돈의 이동을 추가만 하는 기록 |
 | OSIV | Open Session In View. 요청 끝까지 DB 연결을 유지하는 설정 |
 | N+1 | 목록 1번 조회 후, 항목마다 추가 쿼리가 N번 나가는 문제 |
+| 영속성 컨텍스트 | JPA가 엔티티를 관리하는 공간. 트랜잭션 동안 엔티티를 기억하고 변경을 추적한다 |
+| 1차 캐시 | 영속성 컨텍스트 안의 엔티티 저장소. 같은 id를 다시 찾으면 DB에 가지 않고 여기서 돌려준다 |
+| 쓰기 지연 | 변경 SQL을 모았다가 flush 때 한 번에 보내는 것 |
+| 더티 체킹 | 트랜잭션이 끝날 때 바뀐 필드를 찾아 UPDATE를 자동으로 만드는 것. 그래서 `save()`를 다시 부르지 않아도 된다 |
+| 복합키 | 컬럼 두 개 이상으로 이루어진 기본키 |
+| mock(가짜 객체) | 테스트에서 진짜 객체 대신 쓰는, 동작을 흉내 내는 객체(Mockito) |

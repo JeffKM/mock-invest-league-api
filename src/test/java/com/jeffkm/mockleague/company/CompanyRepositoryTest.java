@@ -2,15 +2,13 @@ package com.jeffkm.mockleague.company;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.jeffkm.mockleague.support.PostgresTestConfig;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.jdbc.AutoConfigureTestDatabase;
 import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
+import org.springframework.context.annotation.Import;
 
 /**
  * JPA 계층만 띄우는 테스트. 메모리 DB로 바꾸지 않고(replace = NONE)
@@ -18,12 +16,8 @@ import org.testcontainers.junit.jupiter.Testcontainers;
  */
 @DataJpaTest
 @AutoConfigureTestDatabase(replace = AutoConfigureTestDatabase.Replace.NONE)
-@Testcontainers
+@Import(PostgresTestConfig.class)
 class CompanyRepositoryTest {
-
-  @Container
-  @ServiceConnection
-  static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
   @Autowired
   CompanyRepository companyRepository;

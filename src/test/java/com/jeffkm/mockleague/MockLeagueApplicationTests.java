@@ -2,23 +2,17 @@ package com.jeffkm.mockleague;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
+import com.jeffkm.mockleague.support.PostgresTestConfig;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.testcontainers.service.connection.ServiceConnection;
+import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
-import org.testcontainers.containers.PostgreSQLContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 
-/** 스키마(Flyway)가 실제 PostgreSQL에 적용되고 앱이 뜨는지 확인. 도커가 켜져 있어야 한다. */
+/** 스키마(Flyway)가 실제 PostgreSQL에 적용되고, 모든 엔티티가 스키마 검증(validate)을 통과해 앱이 뜨는지 확인. */
 @SpringBootTest
-@Testcontainers
+@Import(PostgresTestConfig.class)
 class MockLeagueApplicationTests {
-
-  @Container
-  @ServiceConnection
-  static PostgreSQLContainer<?> postgres = new PostgreSQLContainer<>("postgres:16-alpine");
 
   @Autowired
   JdbcTemplate jdbc;
