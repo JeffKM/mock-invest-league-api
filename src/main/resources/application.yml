@@ -1,0 +1,31 @@
+spring:
+  application:
+    name: mock-invest-league-api
+  datasource:
+    url: jdbc:postgresql://localhost:5433/league
+    username: league
+    password: league   # 로컬 도커 전용 값. 배포 환경은 환경 변수로 덮어쓴다
+  jpa:
+    open-in-view: false        # 트랜잭션 밖 지연 로딩 금지 → N+1을 서비스 계층에서 드러나게
+    hibernate:
+      ddl-auto: validate       # 스키마는 Flyway가 만들고, 엔티티는 검증만
+    properties:
+      hibernate:
+        format_sql: true
+        jdbc:
+          time_zone: Asia/Seoul
+  flyway:
+    enabled: true
+
+server:
+  port: 8080
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics
+
+logging:
+  level:
+    org.hibernate.SQL: debug   # 실행 SQL 확인(N+1 실험용). 부하 테스트 때는 끈다

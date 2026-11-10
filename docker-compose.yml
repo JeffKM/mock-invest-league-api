@@ -1,0 +1,17 @@
+# 로컬 개발용 PostgreSQL (포트 5433: 다른 프로젝트의 5432와 겹치지 않게)
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: league-postgres
+    environment:
+      POSTGRES_DB: league
+      POSTGRES_USER: league
+      POSTGRES_PASSWORD: league
+      TZ: Asia/Seoul
+    ports:
+      - "5433:5432"
+    volumes:
+      - league-pgdata:/var/lib/postgresql/data
+
+volumes:
+  league-pgdata:
