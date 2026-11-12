@@ -44,6 +44,9 @@ dependencies {
 
 tasks.named('test') {
     useJUnitPlatform()
+    // 서버(CI, 컨테이너)의 JVM 기본 시간대는 보통 UTC 다. 노트북(Asia/Seoul)에서만 통과하는 시간대 버그를 잡기 위해
+    // 테스트는 언제나 UTC 로 돈다(5주차 CI 첫 실행에서 실제로 이 버그가 드러났다. ROADMAP 20단계)
+    systemProperty 'user.timezone', 'UTC'
     finalizedBy jacocoTestReport
 }
 

@@ -16,8 +16,8 @@ spring:
     properties:
       hibernate:
         format_sql: true
-        jdbc:
-          time_zone: Asia/Seoul
+        # hibernate.jdbc.time_zone 은 두지 않는다. 두면 LocalTime(장 시간)까지 JVM 시간대와의 차이만큼 밀려 저장된다
+        # (JVM 이 UTC 인 CI 에서 09:00 → 18:00, 15:30 → 00:30 으로 저장돼 CHECK 위반). Instant 는 timestamptz 라 원래 시간대와 무관하다
   flyway:
     enabled: true
   # 4주차② 조회 캐시(common/ReadCache). none | caffeine(서버 메모리) | redis. 비교 결과는 ROADMAP 19단계
