@@ -3,6 +3,7 @@ package com.jeffkm.mockleague.common;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
@@ -40,11 +41,18 @@ public class GlobalExceptionHandler {
   /**
    * DB 제약 위반(유니크·CHECK). 서비스 검증을 통과했는데 여기까지 왔다면
    * 거의 항상 동시 요청이 겹친 경우다(예: 같은 키 주문 두 개가 동시에 INSERT).
-   * 사용자에게는 409 로 알리고, 원인 추적을 위해 로그를 남긴다. 근본 처리는 2주차.
+   * 주문은 OrderFacade 가 먼저 다시 시도하므로, 여기까지 오면 재시도를 다 써 버린 경우다.
+   * 사용자에게는 409 로 알리고, 원인 추적을 위해 로그를 남긴다.
    */
   @ExceptionHandler(DataIntegrityViolationException.class)
   public ResponseEntity<ApiResponse<Void>> handleConflict(DataIntegrityViolationException e) {
     log.warn("DB 제약 위반: {}", e.getMostSpecificCause().getMessage());
+    return respond(ErrorCode.DATA_CONFLICT, ErrorCode.DATA_CONFLICT.defaultMessage());
+  }
+
+  /** 낙관적 락 재시도(OrderFacade)를 모두 써 버린 경우. 돈은 그대로이니 다시 시도하라고 알린다. */
+  @ExceptionHandler(OptimisticLockingFailureException.class)
+  public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(OptimisticLockingFailureException e) {
     return respond(ErrorCode.DATA_CONFLICT, ErrorCode.DATA_CONFLICT.defaultMessage());
   }
 

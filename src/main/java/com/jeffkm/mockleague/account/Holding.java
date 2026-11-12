@@ -41,7 +41,10 @@ public class Holding {
   @Column(nullable = false)
   private long totalCost;
 
-  /** 2주차 낙관적 락 실험용. Participant 와 같은 이유로 아직 @Version 을 붙이지 않는다. */
+  /**
+   * @Version 을 붙이지 않는다. 보유가 바뀌는 주문은 언제나 같은 트랜잭션에서 계좌 현금도 바꾸므로,
+   * 계좌(Participant)의 버전 하나로 "이 계좌의 모든 변경"을 줄 세울 수 있다. 버전을 두 군데 두면 충돌 처리만 늘어난다.
+   */
   @Column(nullable = false)
   private long version;
 

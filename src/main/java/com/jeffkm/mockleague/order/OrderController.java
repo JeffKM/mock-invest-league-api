@@ -18,10 +18,10 @@ public class OrderController {
 
   public static final String IDEMPOTENCY_HEADER = "Idempotency-Key";
 
-  private final OrderService orderService;
+  private final OrderFacade orderFacade;
 
-  public OrderController(OrderService orderService) {
-    this.orderService = orderService;
+  public OrderController(OrderFacade orderFacade) {
+    this.orderFacade = orderFacade;
   }
 
   /**
@@ -34,6 +34,6 @@ public class OrderController {
       @RequestHeader(AccountController.USER_HEADER) Long userId,
       @RequestHeader(IDEMPOTENCY_HEADER) String idempotencyKey,
       @Valid @RequestBody PlaceOrderRequest request) {
-    return ApiResponse.ok(orderService.placeMarketOrder(contestId, userId, idempotencyKey, request));
+    return ApiResponse.ok(orderFacade.placeMarketOrder(contestId, userId, idempotencyKey, request));
   }
 }

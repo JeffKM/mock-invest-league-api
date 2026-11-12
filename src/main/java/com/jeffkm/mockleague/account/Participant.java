@@ -13,6 +13,7 @@ import jakarta.persistence.Id;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 import jakarta.persistence.Table;
+import jakarta.persistence.Version;
 import java.time.Instant;
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -42,9 +43,11 @@ public class Participant {
   private long reservedCash;
 
   /**
-   * 2주차 낙관적 락 실험용 컬럼. 지금은 일부러 @Version 을 붙이지 않는다.
-   * 붙이면 그 순간부터 낙관적 락이 켜져, "락이 없을 때 갱신 손실이 생기는 것"을 먼저 재현할 수 없다.
+   * 낙관적 락용 버전. Hibernate 가 UPDATE 때마다 1씩 올리고 "where version = 읽었을 때 값"을 붙인다.
+   * 그 사이 다른 트랜잭션이 먼저 고쳤으면 바뀐 행이 0개라 예외가 난다(덮어쓰기 대신 실패).
+   * 비관적 락·조건부 UPDATE 방식에서도 켜져 있지만, 그때는 충돌할 일이 없어 숫자만 올라간다.
    */
+  @Version
   @Column(nullable = false)
   private long version;
 
