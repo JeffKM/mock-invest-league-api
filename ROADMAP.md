@@ -30,7 +30,8 @@
 | 17 | 3주차③: 가상 공시, 출석 보너스, 순위 스냅샷 | 완료 |
 | 18 | 4주차①: 조회 성능(EXPLAIN, LATERAL, 인덱스 순서, 배치 INSERT) | 완료 |
 | 19 | 4주차②: 조회 캐시(없음·서버 메모리·Redis 비교, 기본값 서버 메모리) | 완료 |
-| 20 | 다음 할 일(5주차: Docker, CI, 배포, k6) | 다음 |
+| 20 | 5주차①: 순위 스냅샷 정리, Docker 이미지, CI | 완료 |
+| 21 | 다음 할 일(5주차②: 배포, k6 부하 테스트) | 다음 |
 
 6주 전체 일정:
 
@@ -2073,13 +2074,136 @@ Redis의 장점은 "여러 서버가 같은 값을 본다"와 "재시작해도 �
 
 ---
 
-# 20단계. 다음 할 일
+# 20단계. 5주차①: 순위 스냅샷 정리, Docker 이미지, CI
 
-- **순위 스냅샷 정리 배치.** 지난 날의 장중 스냅샷을 지우고 종가 스냅샷만 남긴다(대회 10개면 하루 78만 줄).
-- **5주차.**
-  - Docker 이미지(앱), compose로 앱·DB 함께 띄우기
-  - CI: GitHub Actions에서 테스트(Testcontainers가 도는지 확인)
-  - 배포와 k6 부하 테스트. 19단계에서 본 것처럼 부하 발생기와 앱은 다른 기계에 둔다
+## 한 일
+
+1. **순위 스냅샷 정리 배치.** 지난 날의 장중 스냅샷을 지우고 날마다 마지막 한 장만 남긴다.
+2. **앱 Docker 이미지.** JRE만 든 이미지에 jar를 계층별로 나눠 넣었다. root가 아닌 사용자로 실행하고, 헬스체크를 붙였다.
+3. **compose로 앱까지 띄우기.** `--profile app`을 줄 때만 앱 컨테이너가 뜬다.
+4. **CI(GitHub Actions).** main에 올리거나 PR을 열면 테스트 → jar → 이미지 빌드까지 확인한다.
+
+| 만든 것 | 파일 |
+|---|---|
+| 정리 쿼리 | `RankingRepository.pruneIntradayBefore` |
+| 정리 서비스·배치 연결 | `RankingService.pruneIntraday`, `ContestLifecycleService.runDaily` |
+| 앱 이미지 | `Dockerfile`, `.dockerignore` |
+| 앱·DB·Redis 함께 띄우기 | `docker-compose.yml`(`app` 서비스, postgres 헬스체크) |
+| CI | `.github/workflows/ci.yml` |
+
+## 20-1. 스냅샷 정리: 무엇을 남기나
+
+17단계의 "남은 걱정"이었다. 5분마다 1,000줄이면 대회 하나에 하루 78,000줄, 대회 10개면 하루 78만 줄이 쌓인다.
+
+남기는 것:
+
+- **오늘** 스냅샷은 모두 남긴다(장중 순위 조회에 쓴다).
+- **지난 날**은 그날 **마지막 틱**의 스냅샷 한 장만 남긴다. 보통 종가 스냅샷이다. 날짜별 순위 추이는 그대로 볼 수 있다.
+- 끝난 대회의 최종 순위(종료일 마지막 틱)도 그래서 남는다.
+
+```sql
+select s.id from ranking_snapshots s
+ where s.contest_id = ? and s.trading_day < ?          -- 오늘보다 앞선 날
+   and s.tick_no < (select max(s2.tick_no) from ranking_snapshots s2   -- 그날 마지막이 아닌 것
+                     where s2.contest_id = s.contest_id and s2.trading_day = s.trading_day)
+```
+
+- **지우는 순서:** `ranking_entries`(줄)를 먼저, `ranking_snapshots`(머리)를 나중에. 줄이 머리를 외래 키로 가리키기 때문이다. 두 문장은 한 트랜잭션이다.
+- **두 번 계산해도 같은가:** 지울 대상을 두 문장이 각각 다시 계산한다. 지난 날에는 새 스냅샷이 생기지 않으므로 같다.
+- **조회에 영향이 없는가:** 가장 최근 스냅샷은 항상 오늘 것이거나 지난 날의 마지막 것이라 지워지지 않는다. 순위표 캐시(19단계)도 스냅샷 id가 키라, 지워진 스냅샷은 애초에 조회되지 않는다.
+- **언제:** 일일 배치(`runDaily`)가 전 거래일 종가 스냅샷을 찍은 **바로 다음**에 정리한다. 순서가 반대면 "그날 마지막"이 아직 종가가 아니어서, 장중 마지막 스냅샷이 남고 종가가 나중에 추가된다(지워지지는 않지만 한 장이 더 남는다).
+
+테스트: 12/1에 0·12·77틱, 12/2에 0·12틱 스냅샷 → 12/2 기준 정리 → `12/1:77, 12/2:0, 12/2:12`만 남는다. 다시 돌리면 0장. 순위 조회는 여전히 12/2 12틱.
+
+## 20-2. Docker 이미지: JRE만, 계층을 나눠서
+
+```dockerfile
+FROM eclipse-temurin:17-jre-alpine AS extract
+COPY ${JAR} app.jar
+RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
+
+FROM eclipse-temurin:17-jre-alpine
+RUN addgroup -S app && adduser -S app -G app
+COPY --from=extract /work/extracted/dependencies/ ./           # 라이브러리(약 70MB, 거의 안 바뀜)
+COPY --from=extract /work/extracted/spring-boot-loader/ ./
+COPY --from=extract /work/extracted/snapshot-dependencies/ ./
+COPY --from=extract /work/extracted/application/ ./            # 내 코드(631KB, 자주 바뀜)
+USER app
+```
+
+- **jar는 밖에서 만든다.** 이미지 안에서 Gradle로 빌드하면 JDK 이미지와 의존성 다운로드가 매번 필요하다. 빌드는 CI·로컬의 Gradle 캐시를 쓰고, 실행 이미지에는 JRE만 넣는다.
+- **계층 나누기:** Docker 이미지는 `COPY` 한 줄이 한 계층이고, 내용이 같으면 다시 만들지도 올리지도 않는다. jar 하나를 통째로 넣으면 코드 한 줄만 고쳐도 70MB를 새로 올린다. 나눠 넣으면 **631KB 계층 하나만** 바뀐다(`docker history`로 확인).
+- **root가 아닌 사용자:** 컨테이너 안에서 앱이 뚫려도 root 권한을 갖지 않게 한다. 실행 중 `id -un`이 `app`인 것을 확인했다.
+- **메모리:** `-XX:MaxRAMPercentage=75`. 컨테이너 메모리 한도의 75%를 힙으로 쓴다. 고정값(`-Xmx`)을 쓰면 한도를 바꿀 때마다 이미지를 고쳐야 한다.
+- **헬스체크:** `/actuator/health`가 `UP`인지 10초마다 본다. compose·배포 환경이 "떠 있지만 고장 난" 컨테이너를 알아챈다.
+- **시간대:** 컨테이너 시계는 UTC다. 업무 날짜는 코드가 `Asia/Seoul`을 직접 쓰므로(`TimeConfig`) 영향이 없다. 로그 시각만 한국 시간으로 보이게 `-Duser.timezone=Asia/Seoul`을 줬다.
+
+이미지 크기는 392MB다. 기본 이미지(JRE + alpine)가 257MB, 라이브러리가 약 135MB다.
+
+**확인한 것(스모크 테스트):** 임시 DB `league_smoke`에 이미지를 붙여 띄우고 curl로 한 바퀴 돌았다. 헬스 → 사용자 → 대회 생성·시작 → 참가 → 시장가 매수 → 같은 키로 다시 보내기(같은 결과) → 출석 → 내 계좌 → 공시 → 순위. 현금이 `10,000,000 − 3 × 84,188 − 수수료 1,262 + 보너스 50,000 = 9,796,174`원으로 맞았다. 끝나고 임시 DB는 지웠다.
+
+**겪은 일:** 컨테이너 로그에 "캐시가 통계를 기록하지 않는다"는 경고가 나왔다. Caffeine은 `recordStats`를 켜야 적중률 같은 지표를 남긴다. 설정에 추가했다.
+
+## 20-3. compose: 같은 파일로 두 가지 쓰임
+
+```bash
+docker compose up -d                 # DB·Redis만. 앱은 IDE·bootRun으로(개발할 때)
+docker compose --profile app up -d   # 앱 컨테이너까지(이미지가 정말 도는지 볼 때)
+```
+
+- `profiles: ["app"]`인 서비스는 프로필을 줄 때만 뜬다. 평소 개발 흐름(앱은 IDE에서)을 바꾸지 않으려고 이렇게 했다.
+- 앱은 `depends_on: postgres: condition: service_healthy`로 DB가 **준비된 뒤에** 뜬다. 그냥 `depends_on`은 컨테이너가 "시작됐는지"만 보고, DB가 접속을 받을 수 있는지는 모른다. 그래서 postgres에 `pg_isready` 헬스체크를 붙였다.
+- 컨테이너끼리는 서비스 이름과 **컨테이너 안 포트**로 찾는다(`postgres:5432`, `redis:6379`). 호스트에서 쓰는 5433·6380은 바깥용이다.
+
+## 20-4. CI: 올릴 때마다 테스트와 이미지 빌드
+
+```yaml
+on: { push: { branches: [main] }, pull_request: {} }
+steps:
+  - actions/checkout@v4
+  - actions/setup-java@v4 (temurin 17)
+  - gradle/actions/setup-gradle@v4      # Gradle·의존성 캐시
+  - ./gradlew test                       # Testcontainers 가 PostgreSQL·Redis 를 띄운다
+  - upload-artifact (테스트 리포트, 실패해도)
+  - ./gradlew bootJar
+  - docker build
+```
+
+- GitHub의 ubuntu 러너에는 Docker가 있어서 Testcontainers 테스트가 그대로 돈다.
+- 테스트 리포트는 `if: always()`로 실패해도 올린다. 실패했을 때야말로 리포트가 필요하다.
+- `timeout-minutes: 40`: 로컬 전체 테스트가 10~20분이다. 무언가 멈추면 40분에 끊는다(이 프로젝트의 워치독 원칙과 같다).
+- 이미지는 아직 어디에도 올리지(push) 않는다. 올릴 곳(레지스트리)과 배포할 곳은 다음 단계에서 정한다.
+- 이 파일은 로컬에서 실행해 볼 수 없다. 커밋해서 GitHub에 올라간 뒤 첫 실행 결과를 확인한다.
+
+## 결과
+
+- 새 테스트 2개(정리 배치). 전체 148개 통과(성능 실험 4개는 건너뜀), 약 5분.
+- 앱 이미지 빌드·실행·스모크 테스트 통과. CI는 커밋 후 GitHub에서 첫 실행을 확인한다.
+
+## 외울 것
+
+- **Q. 스냅샷을 왜, 어떻게 지우나?**
+  → 5분마다 1,000줄이라 대회 10개면 하루 78만 줄이다. 지난 날은 마지막 한 장(종가)만 남기고 지운다. 줄을 먼저, 머리를 나중에 한 트랜잭션으로 지운다. 최근 스냅샷은 지워지지 않아 조회에 영향이 없다.
+- **Q. Dockerfile에서 jar를 왜 계층으로 나눴나?**
+  → Docker는 계층 단위로 캐시하고 올린다. 라이브러리(거의 안 바뀜)와 내 코드(자주 바뀜)를 나누면 코드를 고쳐도 631KB 계층만 다시 만든다.
+- **Q. 이미지 안에서 빌드하지 않은 이유는?**
+  → 실행 이미지에는 JRE만 있으면 된다. 빌드는 Gradle 캐시가 있는 CI·로컬에서 하는 편이 빠르고, 이미지도 작다.
+- **Q. 컨테이너를 root로 돌리면 안 되는 이유는?**
+  → 앱이 뚫리면 공격자가 컨테이너 안에서 root 권한을 갖는다. 전용 사용자로 돌려 피해 범위를 줄인다.
+- **Q. `depends_on`만으로 부족한 이유는?**
+  → 컨테이너가 시작됐는지만 본다. DB가 접속을 받을 준비가 됐는지는 헬스체크(`pg_isready`)와 `condition: service_healthy`로 기다려야 한다.
+- **Q. 컨테이너에서 힙 크기는 어떻게 정했나?**
+  → `MaxRAMPercentage=75`. 컨테이너 메모리 한도에 비례하므로 한도를 바꿔도 이미지를 고칠 필요가 없다.
+- **Q. CI에서 무엇을 확인하나?**
+  → 테스트(실제 PostgreSQL·Redis 컨테이너로), jar 빌드, 이미지 빌드. 실패해도 테스트 리포트를 올린다.
+
+---
+
+# 21단계. 다음 할 일
+
+- **CI 첫 실행 확인.** 커밋 뒤 GitHub Actions 결과를 본다(Testcontainers가 러너에서 도는지).
+- **5주차②: 배포.** 정할 것: 어디에 올릴지(클라우드 VM, 컨테이너 서비스 등), 이미지 레지스트리(GitHub Container Registry 등), DB를 어디에 둘지, 비용. 계정·결제가 필요한 일이라 직접 정한다.
+- **5주차②: k6 부하 테스트.** docs/01 5절 가정(주문 30 TPS, 조회 90 TPS)의 2~3배. 19단계에서 본 것처럼 부하 발생기는 앱과 다른 기계에서 돌린다.
 - **직접 할 일.**
   - Swagger 확인(공시, 출석, 순위 API)
   - 1·2주차 "왜" 노트
@@ -2092,6 +2216,8 @@ Redis의 장점은 "여러 서버가 같은 값을 본다"와 "재시작해도 �
 ```bash
 docker compose up -d                       # 로컬 DB(5433)·Redis(6380) 켜기
 docker compose stop                        # 끄기(데이터는 남는다)
+./gradlew bootJar && docker build -t mock-invest-league-api .   # 앱 이미지
+docker compose --profile app up -d         # 앱 컨테이너까지 띄우기 → http://localhost:8080
 ./gradlew bootRun                          # 앱 실행 → http://localhost:8080/swagger-ui.html
 ./gradlew bootRun --args='--league.clock.fixed=2026-12-01T10:00:00'  # 시계 고정(밤에도 주문 가능)
 TEST_TIMEOUT=1800 ./run_tests.sh           # 전체 테스트(워치독 30분. 기본 600초로는 모자란다)
@@ -2156,3 +2282,8 @@ open build/reports/jacoco/test/html/index.html  # 커버리지
 | Caffeine | 자바 서버 메모리 캐시 라이브러리. 크기·시간 제한으로 오래된 값을 내보낸다 |
 | 직렬화 | 객체를 바이트로 바꾸는 것. Redis처럼 프로세스 밖에 저장하려면 필요하다 |
 | ApacheBench(`ab`) | 같은 요청을 정해진 수만큼 동시에 보내 처리량·응답 시간을 재는 도구 |
+| 이미지 계층(layer) | Docker 이미지를 이루는 층. 내용이 같은 층은 다시 만들지도 올리지도 않는다 |
+| 헬스체크 | 컨테이너가 떠 있을 뿐 아니라 제대로 응답하는지 주기적으로 확인하는 것 |
+| compose 프로필 | `--profile`을 줄 때만 뜨는 서비스 묶음 |
+| CI | Continuous Integration. 코드를 올릴 때마다 자동으로 빌드·테스트하는 것 |
+| GitHub Actions | GitHub가 제공하는 CI. `.github/workflows/*.yml`에 단계를 적는다 |

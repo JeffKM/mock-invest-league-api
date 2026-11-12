@@ -18,6 +18,7 @@ import com.jeffkm.mockleague.support.PostgresTestConfig;
 import com.jeffkm.mockleague.support.TestClockConfig;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.List;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -193,5 +194,55 @@ class RankingSnapshotTest {
     api.getAs(stranger, "/api/contests/{id}/rankings/me", contestId)
         .andExpect(status().isNotFound())
         .andExpect(jsonPath("$.error.code").value("NOT_PARTICIPANT"));
+  }
+
+  // ---------- 정리 배치 ----------
+
+  List<String> snapshotTicks() {
+    return jdbc.queryForList("""
+        select trading_day || ':' || tick_no from ranking_snapshots where contest_id = ?
+         order by trading_day, tick_no
+        """, String.class, contestId);
+  }
+
+  int entriesOfContest() {
+    return jdbc.queryForObject("""
+        select count(*) from ranking_entries e join ranking_snapshots s on s.id = e.snapshot_id
+         where s.contest_id = ?
+        """, Integer.class, contestId);
+  }
+
+  @Test
+  void 정리_배치는_지난_날의_장중_스냅샷만_지우고_날마다_마지막_한_장과_오늘은_남긴다() throws Exception {
+    // 12/1: 0, 12, 77틱 / 12/2: 0, 12틱
+    lifecycleService.runDaily(DEC1.plusDays(1)); // 12/2 가격 만들기(이때 12/1 종가 스냅샷도 찍힌다)
+    for (LocalDateTime t : List.of(DEC1.atTime(9, 0), DEC1.atTime(10, 0),
+        DEC1.plusDays(1).atTime(9, 0), DEC1.plusDays(1).atTime(10, 0))) {
+      lifecycleService.snapshotRunning(t);
+    }
+    assertThat(snapshotTicks()).containsExactly(
+        "2026-12-01:0", "2026-12-01:12", "2026-12-01:77", "2026-12-02:0", "2026-12-02:12");
+
+    assertThat(rankingService.pruneIntraday(contestId, DEC1.plusDays(1))).isEqualTo(2);
+    assertThat(snapshotTicks()).containsExactly("2026-12-01:77", "2026-12-02:0", "2026-12-02:12");
+    assertThat(entriesOfContest()).isEqualTo(3 * 3); // 남은 3장 × 참가자 3명
+
+    // 다시 돌려도 지울 것이 없고, 순위 조회는 여전히 가장 최근(12/2 12틱)이다
+    assertThat(rankingService.pruneIntraday(contestId, DEC1.plusDays(1))).isZero();
+    clock.set(DEC1.plusDays(1).atTime(10, 0));
+    api.fetch("/api/contests/{id}/rankings", contestId)
+        .andExpect(jsonPath("$.data.tradingDay").value("2026-12-02"))
+        .andExpect(jsonPath("$.data.tickNo").value(12));
+  }
+
+  @Test
+  void 일일_배치가_정리까지_한다() {
+    lifecycleService.snapshotRunning(DEC1.atTime(9, 0));
+    lifecycleService.snapshotRunning(DEC1.atTime(10, 0));
+    // 다른 테스트가 남긴 대회까지 배치가 돌지 않게(대회가 끝나는 날 테스트와 같은 이유)
+    jdbc.update("update contests set status = 'FINISHED' where status = 'RUNNING' and id <> ?", contestId);
+    lifecycleService.runDaily(DEC1.plusDays(1)); // 12/1 종가(77틱) 스냅샷 → 12/1 장중 두 장 삭제
+
+    assertThat(snapshotTicks()).containsExactly("2026-12-01:77");
   }
 }

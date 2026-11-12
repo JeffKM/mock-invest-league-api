@@ -18,6 +18,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  *   <li>시작일이 된 예정 대회를 시작한다(가격도 함께 만든다).</li>
  *   <li>지난날에 밀린 지정가 주문을 정산한다(체결 또는 만료).</li>
  *   <li>전 거래일 종가 기준 순위 스냅샷을 찍는다(장 마감 직후 스냅샷을 놓쳤어도 여기서 채워진다).</li>
+ *   <li>지난 날의 장중 스냅샷을 지운다(날마다 마지막 한 장만 남긴다).</li>
  *   <li>종료일이 지난 진행 대회를 끝낸다(남은 지정가 주문을 먼저 정산한다).</li>
  *   <li>진행 중인 대회는 "내일"까지 가격을 만들어 둔다. 오늘 밤 서버가 죽어도 내일 장은 열린다.</li>
  * </ol>
@@ -58,6 +59,7 @@ public class ContestLifecycleService {
       safely(c, "지정가 정산", () -> settlementService.settle(c.getId(), today.atStartOfDay()));
       // 끝내기 전에 찍는다: 종료일 다음 날이면 이것이 대회의 최종 순위다
       safely(c, "순위 스냅샷", () -> snapshot(c, today.atStartOfDay()));
+      safely(c, "순위 스냅샷 정리", () -> rankingService.pruneIntraday(c.getId(), today));
       if (c.getEndsOn().isBefore(today)) {
         safely(c, "종료", () -> tx.executeWithoutResult(s -> contestRepository.findById(c.getId())
             .filter(Contest::isRunning)   // 다른 서버가 먼저 끝냈으면 건너뛴다

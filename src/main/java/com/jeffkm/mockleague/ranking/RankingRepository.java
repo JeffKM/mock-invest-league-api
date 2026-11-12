@@ -82,6 +82,29 @@ public class RankingRepository {
       select ?, t.participant_id, rank() over (order by t.total desc), t.total
         from (""" + TOTALS_SQL + ") t";
 
+  /**
+   * 지울 스냅샷: before 이전 날짜의 스냅샷 중 그날 마지막 틱이 아닌 것(장중 스냅샷).
+   * 그날 마지막 스냅샷(보통 종가)은 남긴다 → 날짜별 순위 추이는 그대로 볼 수 있다.
+   */
+  private static final String PRUNABLE = """
+      select s.id from ranking_snapshots s
+       where s.contest_id = ? and s.trading_day < ?
+         and s.tick_no < (select max(s2.tick_no) from ranking_snapshots s2
+                           where s2.contest_id = s.contest_id and s2.trading_day = s.trading_day)
+      """;
+
+  /**
+   * 지난 날의 장중 스냅샷을 지운다. 줄(entries)을 먼저, 머리(snapshots)를 나중에 지운다(외래 키 순서).
+   * 두 문장은 부르는 쪽 트랜잭션 하나로 묶인다. 지난 날에는 새 스냅샷이 생기지 않으므로 두 번 계산한 대상이 같다.
+   *
+   * @return 지운 스냅샷 수
+   */
+  public int pruneIntradayBefore(Long contestId, LocalDate before) {
+    Date day = Date.valueOf(before);
+    jdbc.update("delete from ranking_entries where snapshot_id in (" + PRUNABLE + ")", contestId, day);
+    return jdbc.update("delete from ranking_snapshots where id in (" + PRUNABLE + ")", contestId, day);
+  }
+
   /** 가장 최근 스냅샷(틱 기준). */
   public Optional<Snapshot> latestSnapshot(Long contestId) {
     return jdbc.query("""

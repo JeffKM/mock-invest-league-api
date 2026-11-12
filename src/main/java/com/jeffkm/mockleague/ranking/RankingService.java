@@ -8,6 +8,7 @@ import com.jeffkm.mockleague.contest.ContestRepository;
 import com.jeffkm.mockleague.contest.TickPosition;
 import com.jeffkm.mockleague.ranking.dto.MyRankingResponse;
 import com.jeffkm.mockleague.ranking.dto.RankingResponse;
+import java.time.LocalDate;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -52,6 +53,20 @@ public class RankingService {
     int rows = rankingRepository.fillEntries(snapshotId.get(), contestId, at);
     log.info("순위 스냅샷: contest={}, {} {}틱, {}명", contestId, at.day(), at.tick(), rows);
     return true;
+  }
+
+  /**
+   * 지난 날의 장중 스냅샷을 지우고 날마다 마지막 스냅샷만 남긴다(일일 배치에서 부른다).
+   * 5분마다 1,000줄이면 대회 하나에 하루 78,000줄, 대회 10개면 78만 줄이 쌓이기 때문이다.
+   * 오늘 스냅샷과 가장 최근 스냅샷은 지우지 않는다 → 순위 조회에 영향이 없다. 몇 번 돌려도 같다.
+   */
+  @Transactional
+  public int pruneIntraday(Long contestId, LocalDate today) {
+    int pruned = rankingRepository.pruneIntradayBefore(contestId, today);
+    if (pruned > 0) {
+      log.info("순위 스냅샷 정리: contest={}, {}장 삭제", contestId, pruned);
+    }
+    return pruned;
   }
 
   @Transactional(readOnly = true)

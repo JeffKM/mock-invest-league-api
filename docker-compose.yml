@@ -1,4 +1,6 @@
 # 로컬 개발용 PostgreSQL (포트 5433: 다른 프로젝트의 5432와 겹치지 않게)
+# docker compose up -d                → DB·Redis 만(앱은 IDE·bootRun 으로)
+# docker compose --profile app up -d  → 앱 이미지까지(먼저 ./gradlew bootJar && docker build -t mock-invest-league-api .)
 services:
   postgres:
     image: postgres:16-alpine
@@ -12,6 +14,10 @@ services:
       - "5433:5432"
     volumes:
       - league-pgdata:/var/lib/postgresql/data
+    healthcheck:   # 앱이 DB 가 준비된 뒤에 뜨게(depends_on 조건)
+      test: ["CMD-SHELL", "pg_isready -U league -d league"]
+      interval: 5s
+      retries: 10
 
   # 4주차② 캐시 비교용(CACHE_TYPE=redis 로 앱을 띄울 때만 필요). 포트 6380: 다른 프로젝트의 6379와 겹치지 않게
   redis:
@@ -19,6 +25,21 @@ services:
     container_name: league-redis
     ports:
       - "6380:6379"
+
+  app:
+    image: mock-invest-league-api
+    container_name: league-app
+    profiles: ["app"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      # 컨테이너끼리는 서비스 이름과 컨테이너 안 포트(5432, 6379)로 찾는다
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/league
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+    ports:
+      - "8080:8080"
 
 volumes:
   league-pgdata:
