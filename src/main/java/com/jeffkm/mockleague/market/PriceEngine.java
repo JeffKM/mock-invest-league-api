@@ -15,6 +15,7 @@ import java.util.Random;
  *   <li>같은 (대회 시드, 티커, 날짜, 전일 종가) → 언제 어디서 돌려도 같은 경로. 재실행·서버 여러 대에서도 결과가 같다.</li>
  *   <li>0번 틱(시가) = 전일 종가. 1번 틱부터 움직인다(1차 범위 단순화: 시가 갭 없음).</li>
  *   <li>모든 틱은 전일 종가 ±제한폭 안(I8). 벽에 닿으면 그 가격에 붙어 있다가 다시 움직인다.</li>
+ *   <li>공시 충격(F6)은 그 틱에 한 번 곱해지는 "계단"이다. 이후 경로는 바뀐 가격에서 이어진다(효과가 사라지지 않는다).</li>
  * </ul>
  */
 public final class PriceEngine {
@@ -31,8 +32,23 @@ public final class PriceEngine {
    */
   public static long[] generateDay(long contestSeed, String ticker, LocalDate day, long previousClose,
       Volatility volatility, int ticks, int priceLimitBp) {
+    return generateDay(contestSeed, ticker, day, previousClose, volatility, ticks, priceLimitBp, null);
+  }
+
+  /**
+   * 공시 충격을 넣어 하루 경로를 만든다.
+   *
+   * @param shockBpByTick 틱 번호 → 그 틱의 충격(bp). +500 이면 그 틱에 가격 ×1.05. null 이면 충격 없음.
+   *     0번 틱(시가)은 전일 종가로 고정이라 충격을 받지 않는다.
+   *     충격이 있어도 난수는 똑같이 뽑는다 → 같은 시드면 "공시만 없는 경로"와 무작위 부분이 같다(몬테카를로 비교가 공정하다).
+   */
+  public static long[] generateDay(long contestSeed, String ticker, LocalDate day, long previousClose,
+      Volatility volatility, int ticks, int priceLimitBp, int[] shockBpByTick) {
     if (previousClose <= 0 || ticks <= 0 || priceLimitBp < 0 || priceLimitBp > BP) {
       throw new IllegalArgumentException("가격 생성 입력이 올바르지 않습니다.");
+    }
+    if (shockBpByTick != null && shockBpByTick.length != ticks) {
+      throw new IllegalArgumentException("충격 배열 길이는 틱 수와 같아야 합니다.");
     }
     // 제한폭 경계를 정수로: 위는 버림, 아래는 올림 → 경계값 자체도 ±30% 를 넘지 않는다. 가격은 최소 1원
     long upper = Math.multiplyExact(previousClose, BP + priceLimitBp) / BP;
@@ -49,6 +65,9 @@ public final class PriceEngine {
     double x = previousClose;
     for (int i = 1; i < ticks; i++) {
       x = x * Math.exp(drift + sigma * random.nextGaussian());
+      if (shockBpByTick != null && shockBpByTick[i] != 0) {
+        x = x * (BP + shockBpByTick[i]) / BP;
+      }
       long rounded = Math.round(x);
       long clamped = Math.min(upper, Math.max(lower, rounded));
       if (clamped != rounded) {

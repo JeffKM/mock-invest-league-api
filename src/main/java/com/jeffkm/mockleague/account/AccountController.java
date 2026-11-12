@@ -1,6 +1,7 @@
 package com.jeffkm.mockleague.account;
 
 import com.jeffkm.mockleague.account.dto.AccountResponse;
+import com.jeffkm.mockleague.account.dto.AttendanceResponse;
 import com.jeffkm.mockleague.account.dto.JoinResponse;
 import com.jeffkm.mockleague.common.ApiResponse;
 import org.springframework.http.HttpStatus;
@@ -21,9 +22,11 @@ public class AccountController {
   public static final String USER_HEADER = "X-User-Id";
 
   private final AccountService accountService;
+  private final AttendanceService attendanceService;
 
-  public AccountController(AccountService accountService) {
+  public AccountController(AccountService accountService, AttendanceService attendanceService) {
     this.accountService = accountService;
+    this.attendanceService = attendanceService;
   }
 
   @PostMapping("/participants")
@@ -37,5 +40,13 @@ public class AccountController {
   public ApiResponse<AccountResponse> me(@PathVariable Long contestId,
       @RequestHeader(USER_HEADER) Long userId) {
     return ApiResponse.ok(accountService.getMyAccount(contestId, userId));
+  }
+
+  /** 출석 보너스(F11). 하루 한 번만 받는다. 두 번째부터는 409 ALREADY_ATTENDED. */
+  @PostMapping("/attendance")
+  @ResponseStatus(HttpStatus.CREATED)
+  public ApiResponse<AttendanceResponse> attend(@PathVariable Long contestId,
+      @RequestHeader(USER_HEADER) Long userId) {
+    return ApiResponse.ok(attendanceService.attend(contestId, userId));
   }
 }

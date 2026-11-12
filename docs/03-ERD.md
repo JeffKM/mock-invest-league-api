@@ -1,6 +1,6 @@
 # 03. ERD와 모듈 경계
 
-> 상태: 초안. 실제 스키마는 `src/main/resources/db/migration/V1__init.sql`(Flyway)이고, JPA 엔티티는 이 스키마에 맞춰 직접 작성한다(`ddl-auto: validate`).
+> 상태: 초안. 실제 스키마는 `src/main/resources/db/migration/V1__init.sql`~`V3`(Flyway)이고, JPA 엔티티는 이 스키마에 맞춰 직접 작성한다(`ddl-auto: validate`).
 
 ```mermaid
 erDiagram
@@ -15,6 +15,9 @@ erDiagram
   participants ||--o{ cash_ledger : "현금 기록"
   participants ||--o{ attendance : "출석"
   orders ||--o{ cash_ledger : ""
+  contests ||--o{ ranking_snapshots : "순위표"
+  ranking_snapshots ||--o{ ranking_entries : ""
+  participants ||--o{ ranking_entries : ""
 
   users { bigint id PK
     varchar nickname UK }
@@ -49,6 +52,7 @@ erDiagram
     varchar sector
     date trading_day
     int tick_no
+    int seq
     int impact_bp }
   participants { bigint id PK
     bigint contest_id
@@ -80,6 +84,14 @@ erDiagram
     bigint order_id }
   attendance { bigint participant_id PK
     date attended_on PK }
+  ranking_snapshots { bigint id PK
+    bigint contest_id
+    date trading_day
+    int tick_no }
+  ranking_entries { bigint snapshot_id PK
+    bigint participant_id PK
+    int rank
+    bigint total_assets }
 ```
 
 ## 설계 메모(면접 꼬리질문 대비)
@@ -90,6 +102,9 @@ erDiagram
 - **`cash_ledger`:** 잔고는 "결과", 원장은 "이유". I5(현금 보존)를 원장 합계로 검증할 수 있다. 원장은 고치지 않고 추가만 한다. 지정가 주문의 묶기·풀기(`cash` ↔ `reserved_cash`)는 총액이 그대로라 원장에 남기지 않는다.
 - **`price_ticks` 기본키 `(contest_id, company_id, trading_day, tick_no)`:** "이 종목의 오늘 틱 n번 가격" 조회가 기본키 탐색 한 번으로 끝난다. 4주차 EXPLAIN 실험의 기준점.
 - **`orders (participant_id, idempotency_key)` 유니크:** 같은 키가 두 번 들어오면 DB가 두 번째 INSERT를 막는다(I6).
+- **`disclosures (contest_id, trading_day, seq)` 유니크:** 공시도 가격처럼 배치가 두 번 돌아도 한 벌만 남게 한다(V3).
+- **`attendance` 기본키 `(participant_id, attended_on)`:** I7. `insert ... on conflict do nothing`의 바뀐 행 수로 첫 출석인지 판단한다.
+- **`ranking_snapshots`/`ranking_entries`:** 5분마다 찍는 순위표. 조회는 이것만 읽는다(F12). `(snapshot_id, rank)` 인덱스로 상위 N명을 순서대로 읽는다.
 - **`orders (status, trading_day)` 인덱스:** 정산 배치가 "오늘 대기 중인 지정가 주문"만 빠르게 찾기 위함.
 
 ## 모듈(패키지) 경계

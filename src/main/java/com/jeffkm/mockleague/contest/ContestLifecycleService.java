@@ -2,6 +2,7 @@ package com.jeffkm.mockleague.contest;
 
 import com.jeffkm.mockleague.market.PriceGenerationService;
 import com.jeffkm.mockleague.order.LimitOrderSettlementService;
+import com.jeffkm.mockleague.ranking.RankingService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import org.slf4j.Logger;
@@ -16,6 +17,7 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <ol>
  *   <li>시작일이 된 예정 대회를 시작한다(가격도 함께 만든다).</li>
  *   <li>지난날에 밀린 지정가 주문을 정산한다(체결 또는 만료).</li>
+ *   <li>전 거래일 종가 기준 순위 스냅샷을 찍는다(장 마감 직후 스냅샷을 놓쳤어도 여기서 채워진다).</li>
  *   <li>종료일이 지난 진행 대회를 끝낸다(남은 지정가 주문을 먼저 정산한다).</li>
  *   <li>진행 중인 대회는 "내일"까지 가격을 만들어 둔다. 오늘 밤 서버가 죽어도 내일 장은 열린다.</li>
  * </ol>
@@ -31,12 +33,14 @@ public class ContestLifecycleService {
   private final ContestService contestService;
   private final PriceGenerationService priceGenerationService;
   private final LimitOrderSettlementService settlementService;
+  private final RankingService rankingService;
   private final TransactionTemplate tx;
 
   public ContestLifecycleService(ContestRepository contestRepository, ContestService contestService,
       PriceGenerationService priceGenerationService, LimitOrderSettlementService settlementService,
-      TransactionTemplate tx) {
+      RankingService rankingService, TransactionTemplate tx) {
     this.settlementService = settlementService;
+    this.rankingService = rankingService;
     this.contestRepository = contestRepository;
     this.contestService = contestService;
     this.priceGenerationService = priceGenerationService;
@@ -52,6 +56,8 @@ public class ContestLifecycleService {
     for (Contest c : contestRepository.findByStatus(ContestStatus.RUNNING)) {
       // 오늘 0시 기준으로 볼 수 있는 가격 = 어제(또는 마지막 날) 종가까지 → 지난날 주문은 모두 체결 또는 만료된다
       safely(c, "지정가 정산", () -> settlementService.settle(c.getId(), today.atStartOfDay()));
+      // 끝내기 전에 찍는다: 종료일 다음 날이면 이것이 대회의 최종 순위다
+      safely(c, "순위 스냅샷", () -> snapshot(c, today.atStartOfDay()));
       if (c.getEndsOn().isBefore(today)) {
         safely(c, "종료", () -> tx.executeWithoutResult(s -> contestRepository.findById(c.getId())
             .filter(Contest::isRunning)   // 다른 서버가 먼저 끝냈으면 건너뛴다
@@ -67,6 +73,20 @@ public class ContestLifecycleService {
     for (Contest c : contestRepository.findByStatus(ContestStatus.RUNNING)) {
       safely(c, "지정가 정산", () -> settlementService.settle(c.getId(), now));
     }
+  }
+
+  /**
+   * 장 중 5분(틱)마다: 진행 중인 대회의 "지금 틱" 기준 순위 스냅샷을 찍는다.
+   * 장이 닫힌 뒤 처음 도는 실행이 그날 종가 기준 스냅샷을 찍는다. 같은 틱은 다시 찍지 않는다.
+   */
+  public void snapshotRunning(LocalDateTime now) {
+    for (Contest c : contestRepository.findByStatus(ContestStatus.RUNNING)) {
+      safely(c, "순위 스냅샷", () -> snapshot(c, now));
+    }
+  }
+
+  private void snapshot(Contest c, LocalDateTime now) {
+    c.latestVisibleTick(now).ifPresent(at -> rankingService.takeSnapshot(c.getId(), at));
   }
 
   private void safely(Contest c, String what, Runnable work) {
