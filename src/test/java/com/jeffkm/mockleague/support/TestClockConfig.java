@@ -10,8 +10,8 @@ import org.springframework.context.annotation.Primary;
 @TestConfiguration(proxyBeanMethods = false)
 public class TestClockConfig {
 
-  /** 기본 시각: 2026-12-01(화) 10:00, 장 중. */
-  public static final LocalDateTime MARKET_OPEN_TIME = LocalDateTime.of(2026, 12, 1, 10, 0);
+  /** 기본 시각: 2026-12-01(화) 09:00, 대회 첫날 0번 틱. 0번 틱 가격 = 상장 기준가라 기존 금액 계산이 그대로 맞는다. */
+  public static final LocalDateTime MARKET_OPEN_TIME = LocalDateTime.of(2026, 12, 1, 9, 0);
 
   @Bean
   @Primary

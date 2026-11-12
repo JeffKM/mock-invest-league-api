@@ -15,6 +15,7 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.LocalTime;
+import java.util.Optional;
 import org.hibernate.annotations.CreationTimestamp;
 
 /** 대회 하나의 규칙(기간·장 시간·초기 자금·수수료·제한폭·보너스·가격 시드). */
@@ -143,6 +144,47 @@ public class Contest {
       throw new BusinessException(ErrorCode.MARKET_CLOSED);
     }
     return (int) (Duration.between(openTime, time).getSeconds() / tickSeconds);
+  }
+
+  /** 하루 틱 수. 09:00~15:30, 300초 간격이면 78개(0~77). 나누어떨어지지 않으면 마지막 짧은 틱도 센다. */
+  public int ticksPerDay() {
+    long seconds = Duration.between(openTime, closeTime).getSeconds();
+    return (int) ((seconds + tickSeconds - 1) / tickSeconds);
+  }
+
+  /** 거래일인가. 1차 범위에서는 대회 기간의 모든 날이 거래일이다(주말 포함). */
+  public boolean isTradingDay(LocalDate day) {
+    return !day.isBefore(startsOn) && !day.isAfter(endsOn);
+  }
+
+  /**
+   * "지금 보여 줄 가격"이 있는 가장 최근 지점(F5). 미래 틱은 절대 돌려주지 않는다(I11).
+   * <ul>
+   *   <li>장 중: 오늘의 현재 틱</li>
+   *   <li>장 시작 전: 전 거래일의 마지막 틱(종가)</li>
+   *   <li>장 마감 후, 대회 종료 후: 그날(또는 마지막 날)의 마지막 틱</li>
+   *   <li>첫 거래일 장 시작 전, 대회 시작 전: 없음 → 부르는 쪽이 상장 기준가를 쓴다</li>
+   * </ul>
+   * 상태(RUNNING 여부)는 보지 않는다. 끝난 대회도 마지막 종가로 평가해야 하기 때문이다.
+   */
+  public Optional<TickPosition> latestVisibleTick(LocalDateTime now) {
+    LocalDate day = now.toLocalDate();
+    LocalTime time = now.toLocalTime();
+    int lastTick = ticksPerDay() - 1;
+    if (day.isAfter(endsOn)) {
+      return Optional.of(new TickPosition(endsOn, lastTick));
+    }
+    if (day.isBefore(startsOn)) {
+      return Optional.empty();
+    }
+    if (time.isBefore(openTime)) {
+      LocalDate prev = day.minusDays(1);
+      return prev.isBefore(startsOn) ? Optional.empty() : Optional.of(new TickPosition(prev, lastTick));
+    }
+    if (!time.isBefore(closeTime)) {
+      return Optional.of(new TickPosition(day, lastTick));
+    }
+    return Optional.of(new TickPosition(day, (int) (Duration.between(openTime, time).getSeconds() / tickSeconds)));
   }
 
   public Long getId() {

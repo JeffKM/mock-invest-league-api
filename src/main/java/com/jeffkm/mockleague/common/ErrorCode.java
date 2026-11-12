@@ -18,6 +18,7 @@ public enum ErrorCode {
   DATA_CONFLICT(HttpStatus.CONFLICT, "다른 요청과 충돌했습니다. 다시 시도해 주세요."),
   ALREADY_ATTENDED(HttpStatus.CONFLICT, "오늘 출석 보너스를 이미 받았습니다."), // I7
   ORDER_NOT_CANCELABLE(HttpStatus.CONFLICT, "취소할 수 없는 주문입니다."), // I10
+  PRICE_NOT_READY(HttpStatus.SERVICE_UNAVAILABLE, "가격이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."), // F4
   INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
 
   private final HttpStatus status;

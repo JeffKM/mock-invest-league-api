@@ -87,7 +87,7 @@ public class OrderService {
     // 3) 가격과 금액·수수료(I3, I4)
     Company company = companyRepository.findByTicker(request.ticker())
         .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "종목을 찾을 수 없습니다: " + request.ticker()));
-    long price = priceProvider.currentPrice(contestId, company.getId());
+    long price = priceProvider.priceAt(contestId, company.getId(), now.toLocalDate(), tick); // 2)에서 정한 그 틱의 가격
     long amount = Math.multiplyExact(price, request.quantity());
     long fee = FeePolicy.fee(amount, contest.getFeeBp());
 
