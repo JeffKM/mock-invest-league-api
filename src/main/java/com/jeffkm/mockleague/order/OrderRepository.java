@@ -17,7 +17,17 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
   Optional<Order> findByIdAndParticipantId(Long id, Long participantId);
 
-  @Query("select o from Order o join fetch o.company where o.participant.id = :participantId order by o.id desc")
+  /**
+   * 최근 주문. 정렬은 (created_at desc, id desc) 이고, 인덱스 (participant_id, created_at desc, id desc) 와 순서가 같다(V4).
+   * 예전에는 "order by id desc" 였다. 그러면 플래너가 기본키를 뒤에서부터 읽으며 이 참가자 주문을 골라내는 길을 고를 수 있다.
+   * 이 참가자의 주문이 오래전에 몰려 있으면 다른 사람 주문 10만 건을 건너뛴다(ROADMAP 18단계 실험 C).
+   * 기본키로는 created_at 순서를 만들 수 없으니, 정렬을 바꾸면 그 길이 사라진다.
+   */
+  @Query("""
+      select o from Order o join fetch o.company
+       where o.participant.id = :participantId
+       order by o.createdAt desc, o.id desc
+      """)
   List<Order> findRecentWithCompany(@Param("participantId") Long participantId, Pageable pageable);
 
   /**

@@ -5,6 +5,10 @@ spring:
     url: jdbc:postgresql://localhost:5433/league
     username: league
     password: league   # 로컬 도커 전용 값. 배포 환경은 환경 변수로 덮어쓴다
+    hikari:
+      data-source-properties:
+        # JDBC 배치 INSERT 를 여러 행 INSERT 로 합쳐 보낸다(가격 하루치 1,872행). 효과는 ROADMAP 18단계
+        reWriteBatchedInserts: true
   jpa:
     open-in-view: false        # 트랜잭션 밖 지연 로딩 금지 → N+1을 서비스 계층에서 드러나게
     hibernate:

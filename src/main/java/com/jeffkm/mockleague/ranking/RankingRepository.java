@@ -1,6 +1,7 @@
 package com.jeffkm.mockleague.ranking;
 
 import com.jeffkm.mockleague.contest.TickPosition;
+import com.jeffkm.mockleague.market.PriceTickRepository;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
@@ -54,27 +55,30 @@ public class RankingRepository {
    * @return 넣은 줄 수(= 참가자 수)
    */
   public int fillEntries(Long snapshotId, Long contestId, TickPosition at) {
-    return jdbc.update("""
-        insert into ranking_entries (snapshot_id, participant_id, rank, total_assets)
-        select ?, t.participant_id, rank() over (order by t.total desc), t.total
-          from (
-            select p.id as participant_id,
-                   (p.cash + p.reserved_cash
-                     + coalesce(sum(h.quantity * coalesce(px.price, cl.base_price)), 0))::bigint as total
-              from participants p
-              left join holdings h on h.participant_id = p.id and h.quantity > 0
-              left join contest_listings cl on cl.contest_id = p.contest_id and cl.company_id = h.company_id
-              left join (
-                select distinct on (company_id) company_id, price
-                  from price_ticks
-                 where contest_id = ? and (trading_day, tick_no) <= (?, ?)
-                 order by company_id, trading_day desc, tick_no desc
-              ) px on px.company_id = h.company_id
-             where p.contest_id = ?
-             group by p.id
-          ) t
-        """, snapshotId, contestId, Date.valueOf(at.day()), at.tick(), contestId);
+    return jdbc.update(INSERT_ENTRIES_SQL, Date.valueOf(at.day()), at.tick(), contestId, snapshotId, contestId);
   }
+
+  /**
+   * 파라미터 순서: (day, tick, contestId) ← 가격 CTE, 그다음 (snapshotId, contestId).
+   * 가격은 현재가 조회와 같은 문장(PriceTickRepository.LATEST_PRICES_SQL)을 CTE 로 재사용한다.
+   */
+  public static final String TOTALS_SQL = """
+      select p.id as participant_id,
+             (p.cash + p.reserved_cash
+               + coalesce(sum(h.quantity * coalesce(px.price, cl.base_price)), 0))::bigint as total
+        from participants p
+        left join holdings h on h.participant_id = p.id and h.quantity > 0
+        left join contest_listings cl on cl.contest_id = p.contest_id and cl.company_id = h.company_id
+        left join px on px.company_id = h.company_id
+       where p.contest_id = ?
+       group by p.id
+      """;
+
+  static final String INSERT_ENTRIES_SQL = "with px as (" + PriceTickRepository.LATEST_PRICES_SQL + ")\n"
+      + """
+      insert into ranking_entries (snapshot_id, participant_id, rank, total_assets)
+      select ?, t.participant_id, rank() over (order by t.total desc), t.total
+        from (""" + TOTALS_SQL + ") t";
 
   /** 가장 최근 스냅샷(틱 기준). */
   public Optional<Snapshot> latestSnapshot(Long contestId) {

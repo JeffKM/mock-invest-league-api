@@ -28,7 +28,8 @@
 | 15 | 3주차①: 틱 가격 엔진과 일일 배치 | 완료 |
 | 16 | 3주차②: 지정가 주문(묶기·정산 배치·취소, I10) | 완료 |
 | 17 | 3주차③: 가상 공시, 출석 보너스, 순위 스냅샷 | 완료 |
-| 18 | 다음 할 일(4주차: 조회 성능) | 다음 |
+| 18 | 4주차①: 조회 성능(EXPLAIN, LATERAL, 인덱스 순서, 배치 INSERT) | 완료 |
+| 19 | 다음 할 일(4주차②: Redis 캐시) | 다음 |
 
 6주 전체 일정:
 
@@ -1753,16 +1754,193 @@ select ?, t.participant_id, rank() over (order by t.total desc), t.total
 
 ---
 
-# 18단계. 다음 할 일
+# 18단계. 4주차①: 조회 성능(EXPLAIN으로 찾고, 고치고, 재기)
 
-- **4주차: 조회 성능.** EXPLAIN으로 느린 쿼리를 찾고 인덱스로 고친 뒤 전후 수치를 남긴다. 재료:
-  - 현재가 `distinct on` 쿼리(15단계). 대회가 길어질수록 읽는 가격 행이 는다.
-  - 순위 스냅샷 쿼리(17단계)도 같은 서브쿼리를 쓴다.
-  - 순위 스냅샷 정리: 지난 날의 장중 스냅샷을 지우고 종가만 남긴다(대회 10개면 하루 78만 줄).
-  - 순위·시세 조회에 Redis 캐시를 붙일지 판단한다.
-- **테스트 시간.** 전체 테스트가 약 19분 걸린다. 통합 테스트가 공유 DB에 대회를 계속 쌓아 일일 배치가 점점 느려진다. 테스트마다 대회를 정리하거나, 배치를 대회 하나씩 부르는 테스트로 나누는 것을 검토한다.
+## 한 일
+
+느릴 것 같은 쿼리 네 개를 실제 규모의 데이터로 재고 고쳤다.
+
+| 실험 | 무엇 | 바꾼 것 | 전 → 후(서버 실행 시간 중앙값) | 읽은 블록(8KB) |
+|---|---|---|---|---|
+| A | 현재가(종목 24개의 최신 가격) | `distinct on` → `LATERAL` + `limit 1` | 166 ms → 1.1 ms | 3,055 → 98 |
+| B | 순위 스냅샷의 총자산 계산 | A의 문장을 재사용 | 197 ms → 43 ms | 3,522 → 565 |
+| C | 내 주문 목록(최근 50건) | 정렬을 `created_at desc, id desc`로, 인덱스를 같은 순서로 | 34 ms → 0.4 ms | 2,276 → 16 |
+| D | 가격 하루치 INSERT(1,872행) | 드라이버 `reWriteBatchedInserts=true` | 744 ms → 484 ms | — |
+
+- 실험 데이터(docs/01 5절 가정): 대회 10개가 30일째, 가격 561,600행, 참가자 10,000명, 보유 48,000행, 주문 105,000건.
+- 시간은 실행할 때마다 두 배 가까이 흔들렸다(같은 노트북에서 다른 일이 돌기 때문이다). **읽은 블록 수**는 매번 같았다. 그래서 비교의 기준은 블록 수로 보고, 시간은 참고로 본다.
+- C는 주문이 오래전에 몰린 참가자의 경우다. 주문 10건인 보통 참가자는 전후 모두 0.5 ms 정도로 차이가 없었다.
+
+| 만든 것 | 파일 |
+|---|---|
+| 실험(기본 테스트에서는 건너뜀) | `src/test/.../perf/QueryPerformanceExperiment` |
+| 현재가 문장 | `PriceTickRepository.LATEST_PRICES_SQL` |
+| 순위 계산이 같은 문장을 재사용 | `RankingRepository.TOTALS_SQL`, `INSERT_ENTRIES_SQL` |
+| 주문 목록 정렬 | `OrderRepository.findRecentWithCompany` |
+| 인덱스 교체 | `db/migration/V4__orders_recent_index.sql` |
+| 배치 INSERT 설정 | `application.yml`의 `hikari.data-source-properties.reWriteBatchedInserts` |
+
+실행:
+
+```bash
+LEAGUE_EXPERIMENT=true TEST_TIMEOUT=900 ./run_tests.sh --tests '*QueryPerformanceExperiment'
+grep -h '\[성능\]' build/test-results/test/*QueryPerformance*.xml   # 결과 줄
+ls build/perf/                                                       # 실행 계획 전문
+```
+
+## 18-1. 실험 방법: 결과가 같은지 먼저, 그다음 계획과 시간
+
+쿼리마다 같은 순서로 확인했다.
+
+1. **예전 문장과 지금 문장의 결과가 같은가.** 빨라졌는데 답이 다르면 의미가 없다. 행을 정렬해 그대로 비교한다.
+2. **`EXPLAIN (ANALYZE, BUFFERS)`.** 실제로 실행하고, 어떤 길(계획)로 몇 행을 읽었는지, 블록을 몇 개 건드렸는지 본다.
+3. **30번 실행한 서버 실행 시간의 중앙값.** 앞에 5번은 데우기로 버린다. 평균 대신 중앙값을 쓰는 이유는 가끔 튀는 한 번에 끌려가지 않기 위해서다.
+
+데이터는 앱으로 넣지 않고 SQL `generate_series`로 넣었다. 56만 행을 서비스로 만들면 몇 시간이 걸린다. 가격 값은 날짜·틱·종목마다 다르게 만들었다. 모두 같은 값이면 "결과가 같다"는 비교가 아무것도 확인하지 못한다.
+
+이 실험은 `LEAGUE_EXPERIMENT=true`일 때만 돈다(`@EnabledIfEnvironmentVariable`). 데이터를 넣는 데만 3분이 걸려서, 평소 테스트에 넣으면 이미 19분인 전체 테스트가 더 길어진다.
+
+## 18-2. A. 현재가: 인덱스 열 순서와 조건이 어긋났다
+
+예전 문장:
+
+```sql
+select distinct on (company_id) company_id, price
+  from price_ticks
+ where contest_id = ? and (trading_day, tick_no) <= (?, ?)
+ order by company_id, trading_day desc, tick_no desc
+```
+
+예전 계획(요약):
+
+```
+Unique  (rows=24)
+  -> Sort  (rows=55,272)                         ← 5만 행을 정렬
+       -> Bitmap Heap Scan on price_ticks  (rows=55,272, 블록 3,055)
+            Index Cond: contest_id = 1 AND ROW(trading_day, tick_no) <= ROW(...)
+```
+
+기본키는 `(contest_id, company_id, trading_day, tick_no)`다. 조건은 `contest_id`와 `trading_day`에 걸려 있는데, 그 사이에 `company_id`가 끼어 있다. 그래서 인덱스는 `contest_id = 1`인 부분 전체(종목 24개 × 30일 × 78틱 ≈ 5.5만 행)를 훑을 수밖에 없다. 그 5.5만 행을 정렬한 뒤 종목마다 맨 앞 한 행만 남긴다. **24행을 얻으려고 5.5만 행을 읽는다.** 대회가 길어질수록 더 느려진다.
+
+지금 문장:
+
+```sql
+select cl.company_id, p.price
+  from contest_listings cl
+  cross join lateral (
+    select pt.price from price_ticks pt
+     where pt.contest_id = cl.contest_id and pt.company_id = cl.company_id
+       and (pt.trading_day, pt.tick_no) <= (?, ?)
+     order by pt.trading_day desc, pt.tick_no desc
+     limit 1
+  ) p
+ where cl.contest_id = ?
+```
+
+지금 계획(요약):
+
+```
+Nested Loop  (rows=24, 블록 98)
+  -> Seq Scan on contest_listings  (rows=24)
+  -> Limit  (rows=1, loops=24)
+       -> Index Scan Backward using price_ticks_pkey  (rows=1, loops=24)
+            Index Cond: contest_id = .. AND company_id = .. AND ROW(trading_day, tick_no) <= ROW(...)
+```
+
+- `LATERAL`은 "바깥 행마다 안쪽 쿼리를 한 번씩 실행하라"는 뜻이다. 종목 24개마다 안쪽 쿼리가 돈다.
+- 안쪽 쿼리는 `contest_id`, `company_id`가 같고 그다음 `(trading_day, tick_no)`로 범위를 정한다. **기본키 열 순서와 정확히 같다.** 그래서 인덱스에서 그 위치를 바로 찾고, 뒤에서부터 한 칸만 읽고 멈춘다(`limit 1`).
+- 결과: 블록 3,055 → 98(종목당 약 4블록). **대회가 며칠째든 거의 같다.**
+
+새 인덱스를 만들지 않았다. 이미 있는 기본키를 제대로 쓰게 문장만 바꿨다. 인덱스는 쓰기를 느리게 하고 공간을 쓰므로, 있는 것을 먼저 활용한다.
+
+## 18-3. B. 순위 계산: 같은 문장을 재사용해 함께 빨라졌다
+
+순위 스냅샷(17단계)도 같은 `distinct on` 서브쿼리를 쓰고 있었다. 이제 `PriceTickRepository.LATEST_PRICES_SQL`을 CTE(`with px as (...)`)로 가져다 쓴다. 두 곳이 같은 문장을 쓰니 **"내 계좌의 평가액"과 "순위표의 총자산"이 같은 가격 기준**이라는 것도 코드로 보장된다.
+
+남은 43 ms는 대부분 `holdings` 전체(48,000행)를 읽어 참가자 1,000명과 해시 조인하는 부분이다. 이 쿼리는 5분에 한 번 도는 배치라 지금은 충분하다. 대회가 100개로 늘면 `holdings`도 10배가 되니, 그때는 참가자 쪽에서 출발해 보유를 기본키로 찾는 계획이 나오는지 다시 본다.
+
+## 18-4. C. 내 주문 목록: 인덱스를 맞췄는데 플래너가 안 썼다
+
+예전: 쿼리는 `order by o.id desc limit 50`, 인덱스는 `(participant_id, created_at desc)`. 정렬과 인덱스 순서가 달랐다.
+
+**첫 시도:** 인덱스를 `(participant_id, id desc)`로 바꿨다. 결과가 그대로였다. 계획을 보니 플래너는 새 인덱스를 쓰지 않았다.
+
+```
+Limit (rows=50)
+  -> Index Scan Backward using orders_pkey on orders   ← 기본키를 뒤에서부터
+       Filter: (participant_id = 1)
+       Rows Removed by Filter: 99,990                   ← 남의 주문 10만 건을 건너뜀
+```
+
+**왜?** 플래너는 "이 참가자의 주문(전체의 약 5%)이 테이블 전체에 고르게 퍼져 있다"고 가정한다. 그러면 기본키(id)를 뒤에서부터 읽으면 약 1,000행 안에 50건이 나온다. 정렬도 필요 없다. 그래서 이 길이 싸 보인다. 그런데 실험 데이터의 이 참가자는 **주문이 오래전에 몰려 있다**(예전에 많이 거래하고 지금은 쉬는 사람). 뒤에서부터 읽으면 다른 사람들의 최근 주문 10만 건을 지나서야 이 사람 주문이 나온다. **통계가 "분포"는 알아도 "id와 참가자의 관계"는 모른다.**
+
+> 처음 데이터에서는 이 참가자의 주문을 맨 마지막에 넣었다. 그러면 기본키를 뒤에서 읽자마자 50건이 나와서 문제가 보이지 않았다. 측정 데이터가 "최선의 경우"면 결론이 틀린다. 넣는 순서를 바꿔서 다시 쟀다.
+
+**고친 것:** 정렬을 `created_at desc, id desc`로 바꾸고, 인덱스도 `(participant_id, created_at desc, id desc)`로 같은 순서로 만들었다(V4). 기본키는 `created_at` 순서를 만들어 줄 수 없다. 그래서 "기본키를 뒤에서 읽는" 길이 아예 후보에서 빠지고, 새 인덱스에서 이 참가자 부분의 앞 50건만 읽는다.
+
+```
+Limit (rows=50, 블록 16)
+  -> Index Scan using idx_orders_participant_recent   ← 50행만 읽고 멈춤
+       Index Cond: (participant_id = 1)
+```
+
+- 주문이 몰린 참가자: 34 ms → 0.4 ms, 블록 2,276 → 16.
+- 주문 10건인 보통 참가자: 전후 모두 0.5 ms. 10건을 읽어 정렬하는 것은 원래 싸다.
+- `id` 대신 `created_at`으로 정렬해도 결과(최근 50건)가 같은지 실험이 확인한다. 같은 시각이면 `id`로 순서를 정한다.
+
+배운 것: **인덱스를 만들었다고 쓰이는 것이 아니다. 반드시 `EXPLAIN`으로 실제 계획을 확인한다.** 그리고 쿼리가 다른 길을 고를 여지를 없애는 것(정렬을 인덱스만 만들 수 있는 순서로)이 플래너 힌트보다 확실하다. PostgreSQL에는 힌트 문법이 기본으로 없다.
+
+## 18-5. D. 배치 INSERT: 기대보다 작은 효과
+
+가격 하루치(1,872행)를 넣는 `batchUpdate`에 PostgreSQL 드라이버 설정 `reWriteBatchedInserts=true`를 켰다. 드라이버가 `insert ... values (...)` 1,872개를 `values (...), (...), ...` 여러 행 INSERT 몇 개로 합쳐 보낸다.
+
+| | 1회차 ~ 5회차(ms) | 중앙값 |
+|---|---|---|
+| 기본 | 733, 744, 909, 765, 740 | 744 |
+| 합쳐 보내기 | 639, 431, 484, 470, 485 | 484 |
+
+- 약 35% 빨라졌다. 기대(몇 배)보다 작다. JDBC 배치는 원래도 문장마다 응답을 기다리지 않고 한꺼번에 보내기 때문이다. 합쳐 보내기는 서버가 문장을 해석하는 횟수를 줄이는 정도다.
+- 측정에서 실수할 뻔한 것: 처음에는 측정마다 **연결을 새로 맺었다**. 그러면 연결 비용(인증 등)이 두 방식 모두에 섞여 차이가 흐려진다. 연결 하나를 계속 쓰고, 측정 전에 한 번씩 데운 뒤 다시 쟀다.
+- **대가:** 드라이버가 행마다 "몇 행 들어갔는지"를 알려 주지 않는다(`SUCCESS_NO_INFO`). 그래서 `insertDay`가 넣은 행 수를 돌려주던 것을 없앴다. 쓰는 곳이 없었다.
+
+## 18-6. 확인만 하고 고치지 않은 것
+
+- **공시 조회**: `(contest_id, trading_day, tick_no)` 인덱스가 있다. 정렬의 마지막 열 `seq`가 인덱스에 없지만, 대회 하나의 공시는 하루 1건꼴이라 정렬할 행이 수십 개뿐이다.
+- **지정가 정산 대상 찾기**: `(status, trading_day)` 인덱스로 `PENDING`만 찾는다. 체결된 주문이 아무리 쌓여도 대기 중인 것만 읽는다.
+- **원장 합계(I5 확인)**: `(participant_id, id)` 인덱스가 있다.
+
+## 결과
+
+- 실험 4개(쿼리 5종). 모든 경우 예전·지금 결과가 같은 것을 먼저 확인했다.
+- 전체 테스트 141개 통과(실험 4개는 건너뜀).
+- 전체 테스트 시간이 이번에는 약 19분 → 8분이었다. 테스트마다 현재가·순위 조회와 가격 INSERT를 많이 하니 이번 변경의 영향일 수 있다. 다만 같은 노트북의 부하에 따라 시간이 크게 흔들리는 것을 실험에서 봤으므로, 원인을 이것 하나로 단정하지 않는다.
+
+## 외울 것
+
+- **Q. 인덱스가 있는데 왜 느렸나?**
+  → 인덱스는 앞 열부터 순서대로만 범위를 좁힐 수 있다. 기본키 `(contest_id, company_id, trading_day, tick_no)`에서 조건이 `contest_id`와 `trading_day`에만 걸리면, 가운데 `company_id` 때문에 `trading_day`로 좁히지 못하고 대회 전체를 읽는다.
+- **Q. 어떻게 고쳤나?**
+  → 종목마다(`LATERAL`) `contest_id`, `company_id`를 같게 두고 `(trading_day, tick_no)` 범위의 마지막 1행만 찾았다. 인덱스 열 순서와 같아서 종목당 몇 블록만 읽는다. 새 인덱스 없이 3,055블록 → 98블록.
+- **Q. `distinct on`이 나쁜가?**
+  → 아니다. 읽는 행이 적으면 좋은 도구다. 여기서는 "종목마다 1행"을 얻으려고 대회 전체를 정렬하는 게 문제였다. 데이터가 늘수록 같이 느려지는 문장인지가 핵심이다.
+- **Q. 인덱스를 만들었는데 플래너가 안 쓰면?**
+  → `EXPLAIN`으로 이유를 본다. 이번에는 플래너가 "주문이 고르게 퍼져 있다"고 가정해 기본키 역순 탐색을 골랐다. 정렬을 `created_at desc, id desc`로 바꿔 기본키로는 만들 수 없는 순서로 만들자, 플래너가 새 인덱스를 쓸 수밖에 없게 됐다.
+- **Q. 성능을 어떻게 비교했나?**
+  → 결과가 같은지 먼저 확인하고, `EXPLAIN (ANALYZE, BUFFERS)`로 계획과 읽은 블록을 보고, 30번 실행의 중앙값을 쟀다. 시간은 환경에 따라 흔들려서 블록 수를 주 기준으로 삼았다.
+- **Q. 실험 데이터에서 조심한 점은?**
+  → 데이터가 우연히 최선의 경우가 되지 않게 했다. 주문이 많은 참가자의 주문을 처음에 맨 뒤에 넣었더니 문제가 숨었다. 순서를 바꿔 다시 쟀다. 배치 INSERT도 연결 비용이 섞이지 않게 연결 하나로 다시 쟀다.
+- **Q. `reWriteBatchedInserts`의 효과와 대가는?**
+  → 여러 INSERT를 여러 행 INSERT로 합쳐 서버의 해석 횟수를 줄인다. 이번에는 약 35%. 대가로 드라이버가 행별 결과 수를 주지 않는다.
+
+---
+
+# 19단계. 다음 할 일
+
+- **4주차②: Redis 캐시.** 순위표·현재가처럼 "많이 읽고 5분마다 바뀌는" 응답을 캐시할지 판단한다. 18단계로 현재가가 1 ms대가 되었으므로, 캐시가 정말 필요한지 k6로 먼저 재 보고 정한다(캐시는 무효화라는 비용이 있다).
+- **순위 스냅샷 정리 배치.** 지난 날의 장중 스냅샷을 지우고 종가 스냅샷만 남긴다(대회 10개면 하루 78만 줄).
+- **5주차 준비.** Docker 이미지, CI(GitHub Actions에서 테스트), 배포, k6 부하 테스트.
 - **직접 할 일.**
-  - Swagger 확인(새 API: 공시, 출석, 순위)
+  - Swagger 확인(공시, 출석, 순위 API)
   - 1·2주차 "왜" 노트
   - docs/01 6절 결정 확인: 지정가 체결 가격은 지금 지정가로 구현돼 있다
 
@@ -1778,6 +1956,8 @@ TEST_TIMEOUT=1800 ./run_tests.sh           # 전체 테스트(워치독 30분. �
 ./run_tests.sh --tests '*Company*'         # 일부 테스트만
 ./run_tests.sh --tests '*ConcurrencyTest*' # 동시성 비교(방식 4개 × 시나리오 4개). 결과 줄은 [동시성]
 grep -h '\[동시성\]' build/test-results/test/*Concurrency*.xml  # 비교 수치만 보기
+LEAGUE_EXPERIMENT=true TEST_TIMEOUT=900 ./run_tests.sh --tests '*QueryPerformanceExperiment'  # 조회 성능 실험(약 6분)
+grep -h '\[성능\]' build/test-results/test/*QueryPerformance*.xml  # 성능 수치만 보기
 ./gradlew bootRun --args='--league.order.lock-strategy=CONDITIONAL'  # 락 방식 바꿔 띄우기
 open build/reports/tests/test/index.html   # 테스트 결과
 open build/reports/jacoco/test/html/index.html  # 커버리지
@@ -1821,3 +2001,9 @@ open build/reports/jacoco/test/html/index.html  # 커버리지
 | `rank()` | 정렬 순서대로 순위를 매기는 SQL 창 함수. 동점이면 같은 순위(1, 2, 2, 4) |
 | `INSERT ... SELECT` | 조회 결과를 그대로 다른 테이블에 넣는 SQL. 앱으로 가져오지 않고 DB 안에서 끝난다 |
 | 교착(Deadlock) | 두 트랜잭션이 서로 상대가 잡은 락을 기다려 둘 다 멈추는 것. 잠그는 순서를 같게 하면 막을 수 있다 |
+| `EXPLAIN (ANALYZE, BUFFERS)` | 쿼리를 실제로 실행하고, 고른 계획·읽은 행·건드린 블록을 보여 주는 PostgreSQL 명령 |
+| 플래너(Planner) | 통계를 보고 쿼리를 어떤 길(인덱스, 정렬, 조인 방식)로 실행할지 고르는 DB 부품 |
+| 버퍼·블록 | DB가 데이터를 읽는 단위(8KB). 읽은 블록 수는 시간보다 덜 흔들리는 비용 지표다 |
+| `LATERAL` | 바깥 행마다 안쪽 서브쿼리를 한 번씩 실행하게 하는 SQL. 안쪽에서 바깥 열을 쓸 수 있다 |
+| CTE | `with 이름 as (...)`로 쿼리 앞에 이름 붙인 중간 결과 |
+| 중앙값 | 값을 줄 세웠을 때 가운데 값. 가끔 튀는 값에 덜 끌려간다 |
