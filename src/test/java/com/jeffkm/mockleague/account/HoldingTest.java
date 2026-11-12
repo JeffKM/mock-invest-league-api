@@ -75,4 +75,47 @@ class HoldingTest {
   void 보유가_없으면_평균가는_0이다() {
     assertThat(newHolding().averagePrice()).isZero();
   }
+
+  // ---------- 지정가: 묶기·풀기 ----------
+
+  @Test
+  void I2_묶인_수량은_다른_매도에_쓸_수_없다() {
+    Holding h = newHolding();
+    h.increase(10, 100_000);
+
+    h.reserve(7);
+
+    assertThat(h.availableQuantity()).isEqualTo(3);
+    assertThatThrownBy(() -> h.decrease(4))
+        .isInstanceOf(BusinessException.class)
+        .extracting(e -> ((BusinessException) e).errorCode())
+        .isEqualTo(ErrorCode.INSUFFICIENT_QUANTITY);
+    assertThatThrownBy(() -> h.reserve(4)).isInstanceOf(BusinessException.class);
+  }
+
+  @Test
+  void 묶인_수량을_팔면_묶음과_보유가_함께_줄고_원가도_비율대로_빠진다() {
+    Holding h = newHolding();
+    h.increase(10, 100_000);
+    h.reserve(4);
+
+    long removed = h.sellReserved(4);
+
+    assertThat(removed).isEqualTo(40_000);
+    assertThat(h.getQuantity()).isEqualTo(6);
+    assertThat(h.getReservedQuantity()).isZero();
+  }
+
+  @Test
+  void 풀면_다시_팔_수_있고_묶인_것보다_많이_풀면_프로그램_오류다() {
+    Holding h = newHolding();
+    h.increase(10, 100_000);
+    h.reserve(5);
+
+    h.release(5);
+
+    assertThat(h.availableQuantity()).isEqualTo(10);
+    assertThatThrownBy(() -> h.release(1)).isInstanceOf(IllegalStateException.class);
+    assertThatThrownBy(() -> h.sellReserved(1)).isInstanceOf(IllegalStateException.class);
+  }
 }

@@ -144,7 +144,7 @@ abstract class ConcurrentOrderScenarios {
   }
 
   void order(String key, OrderSide side) {
-    orderFacade.placeMarketOrder(contestId, userId, key, new PlaceOrderRequest("SBSI", side, 1));
+    orderFacade.placeOrder(contestId, userId, key, new PlaceOrderRequest("SBSI", side, 1));
   }
 
   interface KeyFn { String key(int i); }
@@ -178,7 +178,7 @@ abstract class ConcurrentOrderScenarios {
           }
           try {
             start.await();
-            var res = orderFacade.placeMarketOrder(contestId, userId, key,
+            var res = orderFacade.placeOrder(contestId, userId, key,
                 new PlaceOrderRequest("SBSI", side, 1));
             success.incrementAndGet();
             onSuccess.accept(res.orderId());

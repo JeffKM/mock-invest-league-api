@@ -82,6 +82,41 @@ public class Participant {
     cash = Math.addExact(cash, amount); // 넘치면 조용히 음수가 되는 대신 예외
   }
 
+  /**
+   * 지정가 매수 접수: 현금을 묶는다(cash → reservedCash). 총액이 그대로라 원장에는 남기지 않는다(I5).
+   * 부족하면 업무 예외(I1).
+   */
+  public void reserve(long amount) {
+    requirePositive(amount);
+    if (cash < amount) {
+      throw new BusinessException(ErrorCode.INSUFFICIENT_CASH);
+    }
+    cash -= amount;
+    reservedCash = Math.addExact(reservedCash, amount);
+  }
+
+  /** 지정가 매수 취소·만료: 묶은 현금을 풀어 돌려준다(reservedCash → cash). */
+  public void release(long amount) {
+    requirePositive(amount);
+    requireReserved(amount);
+    reservedCash -= amount;
+    cash = Math.addExact(cash, amount);
+  }
+
+  /** 지정가 매수 체결: 묶어 둔 현금으로 낸다(reservedCash 에서 빠져나감 → 원장에 BUY·FEE 로 남는다). */
+  public void payFromReserved(long amount) {
+    requirePositive(amount);
+    requireReserved(amount);
+    reservedCash -= amount;
+  }
+
+  private void requireReserved(long amount) {
+    // 묶은 것보다 많이 풀거나 쓰는 것은 사용자 잘못이 아니라 프로그램 오류다(계산 불일치)
+    if (reservedCash < amount) {
+      throw new IllegalStateException("묶인 현금보다 많이 풀 수 없습니다: " + reservedCash + " < " + amount);
+    }
+  }
+
   private static void requirePositive(long amount) {
     if (amount <= 0) {
       throw new IllegalArgumentException("금액은 0보다 커야 합니다: " + amount);

@@ -123,7 +123,7 @@ class PriceTickIntegrationTest {
     accountService.join(id, userId);
 
     clock.set(DEC1.atTime(11, 7)); // (2시간 7분) / 5분 = 25번 틱
-    OrderResponse res = orderFacade.placeMarketOrder(id, userId, "k",
+    OrderResponse res = orderFacade.placeOrder(id, userId, "k",
         new PlaceOrderRequest("SBSI", OrderSide.BUY, 1));
     assertThat(res.filledPrice()).isEqualTo(priceTickRepository.priceAt(id, sbsi.getId(), DEC1, 25).orElseThrow());
   }

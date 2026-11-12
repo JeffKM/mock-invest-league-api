@@ -1,7 +1,9 @@
 package com.jeffkm.mockleague.contest;
 
 import com.jeffkm.mockleague.market.PriceGenerationService;
+import com.jeffkm.mockleague.order.LimitOrderSettlementService;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -13,7 +15,8 @@ import org.springframework.transaction.support.TransactionTemplate;
  * <p>한 번 돌 때 하는 일:
  * <ol>
  *   <li>시작일이 된 예정 대회를 시작한다(가격도 함께 만든다).</li>
- *   <li>종료일이 지난 진행 대회를 끝낸다.</li>
+ *   <li>지난날에 밀린 지정가 주문을 정산한다(체결 또는 만료).</li>
+ *   <li>종료일이 지난 진행 대회를 끝낸다(남은 지정가 주문을 먼저 정산한다).</li>
  *   <li>진행 중인 대회는 "내일"까지 가격을 만들어 둔다. 오늘 밤 서버가 죽어도 내일 장은 열린다.</li>
  * </ol>
  * 몇 번을 돌려도 결과가 같다(이미 시작·종료한 대회는 건너뛰고, 이미 만든 가격은 다시 만들지 않는다).
@@ -27,10 +30,13 @@ public class ContestLifecycleService {
   private final ContestRepository contestRepository;
   private final ContestService contestService;
   private final PriceGenerationService priceGenerationService;
+  private final LimitOrderSettlementService settlementService;
   private final TransactionTemplate tx;
 
   public ContestLifecycleService(ContestRepository contestRepository, ContestService contestService,
-      PriceGenerationService priceGenerationService, TransactionTemplate tx) {
+      PriceGenerationService priceGenerationService, LimitOrderSettlementService settlementService,
+      TransactionTemplate tx) {
+    this.settlementService = settlementService;
     this.contestRepository = contestRepository;
     this.contestService = contestService;
     this.priceGenerationService = priceGenerationService;
@@ -44,6 +50,8 @@ public class ContestLifecycleService {
       }
     }
     for (Contest c : contestRepository.findByStatus(ContestStatus.RUNNING)) {
+      // 오늘 0시 기준으로 볼 수 있는 가격 = 어제(또는 마지막 날) 종가까지 → 지난날 주문은 모두 체결 또는 만료된다
+      safely(c, "지정가 정산", () -> settlementService.settle(c.getId(), today.atStartOfDay()));
       if (c.getEndsOn().isBefore(today)) {
         safely(c, "종료", () -> tx.executeWithoutResult(s -> contestRepository.findById(c.getId())
             .filter(Contest::isRunning)   // 다른 서버가 먼저 끝냈으면 건너뛴다
@@ -51,6 +59,13 @@ public class ContestLifecycleService {
       } else {
         safely(c, "가격 생성", () -> priceGenerationService.ensureGeneratedThrough(c.getId(), today.plusDays(1)));
       }
+    }
+  }
+
+  /** 장 중 1분마다: 진행 중인 대회의 지정가 주문을 "지금 틱"까지 정산한다. */
+  public void settleRunning(LocalDateTime now) {
+    for (Contest c : contestRepository.findByStatus(ContestStatus.RUNNING)) {
+      safely(c, "지정가 정산", () -> settlementService.settle(c.getId(), now));
     }
   }
 

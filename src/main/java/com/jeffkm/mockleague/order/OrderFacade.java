@@ -44,11 +44,11 @@ public class OrderFacade {
     this.maxAttempts = maxAttempts;
   }
 
-  public OrderResponse placeMarketOrder(Long contestId, Long userId, String idempotencyKey,
+  public OrderResponse placeOrder(Long contestId, Long userId, String idempotencyKey,
       PlaceOrderRequest request) {
     for (int attempt = 1; ; attempt++) {
       try {
-        return orderService.placeMarketOrder(contestId, userId, idempotencyKey, request);
+        return orderService.placeOrder(contestId, userId, idempotencyKey, request);
       } catch (OptimisticLockingFailureException | DataIntegrityViolationException e) {
         String reason = (e instanceof OptimisticLockingFailureException) ? "optimistic" : "constraint";
         if (attempt >= maxAttempts) {

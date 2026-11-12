@@ -152,6 +152,16 @@ public class Contest {
     return (int) ((seconds + tickSeconds - 1) / tickSeconds);
   }
 
+  /** 그날 그 틱이 시작하는 시각. 지정가 체결 시각을 "배치가 돈 시각"이 아니라 "가격이 닿은 시각"으로 남길 때 쓴다. */
+  public LocalDateTime tickStartAt(LocalDate day, int tick) {
+    return day.atTime(openTime).plusSeconds((long) tick * tickSeconds);
+  }
+
+  /** 하루의 마지막 틱 번호. */
+  public int lastTick() {
+    return ticksPerDay() - 1;
+  }
+
   /** 거래일인가. 1차 범위에서는 대회 기간의 모든 날이 거래일이다(주말 포함). */
   public boolean isTradingDay(LocalDate day) {
     return !day.isBefore(startsOn) && !day.isAfter(endsOn);

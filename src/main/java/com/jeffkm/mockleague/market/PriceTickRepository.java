@@ -1,6 +1,7 @@
 package com.jeffkm.mockleague.market;
 
 import com.jeffkm.mockleague.contest.TickPosition;
+import com.jeffkm.mockleague.order.OrderSide;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.ArrayList;
@@ -79,6 +80,23 @@ public class PriceTickRepository {
         select price from price_ticks
          where contest_id = ? and company_id = ? and trading_day = ? and tick_no = ?
         """, Long.class, contestId, companyId, Date.valueOf(day), tick);
+    return found.stream().findFirst();
+  }
+
+  /**
+   * 지정가에 처음 닿은 틱(F8). 매수는 가격 ≤ 지정가, 매도는 가격 ≥ 지정가인 첫 틱이다.
+   * 범위는 [fromTick, toTick]. toTick 을 "지금 틱"으로 넘기면 미래 가격으로 체결하는 일이 없다.
+   */
+  public Optional<Integer> firstTouchTick(Long contestId, Long companyId, LocalDate day, int fromTick,
+      int toTick, OrderSide side, long limitPrice) {
+    String cond = (side == OrderSide.BUY) ? "price <= ?" : "price >= ?";
+    List<Integer> found = jdbc.queryForList("""
+        select tick_no from price_ticks
+         where contest_id = ? and company_id = ? and trading_day = ?
+           and tick_no between ? and ? and %s
+         order by tick_no
+         limit 1
+        """.formatted(cond), Integer.class, contestId, companyId, Date.valueOf(day), fromTick, toTick, limitPrice);
     return found.stream().findFirst();
   }
 

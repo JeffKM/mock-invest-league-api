@@ -90,6 +90,40 @@ public class Holding {
     return removedCost;
   }
 
+  /** 지정가 매도 접수: 팔 수량을 묶는다. 묶인 수량은 다른 매도에 쓸 수 없다(I2). */
+  public void reserve(long qty) {
+    if (qty <= 0) {
+      throw new IllegalArgumentException("수량은 0보다 커야 합니다: " + qty);
+    }
+    if (availableQuantity() < qty) {
+      throw new BusinessException(ErrorCode.INSUFFICIENT_QUANTITY);
+    }
+    reservedQuantity = Math.addExact(reservedQuantity, qty);
+  }
+
+  /** 지정가 매도 취소·만료: 묶은 수량을 푼다. */
+  public void release(long qty) {
+    requireReserved(qty);
+    reservedQuantity -= qty;
+  }
+
+  /**
+   * 지정가 매도 체결: 묶어 둔 수량을 판다. 먼저 묶음을 풀고 일반 매도와 같은 규칙으로 줄인다.
+   *
+   * @return 덜어 낸 매입 원가
+   */
+  public long sellReserved(long qty) {
+    requireReserved(qty);
+    reservedQuantity -= qty;
+    return decrease(qty);
+  }
+
+  private void requireReserved(long qty) {
+    if (qty <= 0 || reservedQuantity < qty) {
+      throw new IllegalStateException("묶인 수량보다 많이 풀 수 없습니다: " + reservedQuantity + " < " + qty);
+    }
+  }
+
   /** 지금 팔 수 있는 수량 = 보유 − 묶인 수량. */
   public long availableQuantity() {
     return quantity - reservedQuantity;
