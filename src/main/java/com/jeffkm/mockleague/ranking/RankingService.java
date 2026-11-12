@@ -2,11 +2,13 @@ package com.jeffkm.mockleague.ranking;
 
 import com.jeffkm.mockleague.common.BusinessException;
 import com.jeffkm.mockleague.common.ErrorCode;
+import com.jeffkm.mockleague.common.ReadCache;
 import com.jeffkm.mockleague.contest.Contest;
 import com.jeffkm.mockleague.contest.ContestRepository;
 import com.jeffkm.mockleague.contest.TickPosition;
 import com.jeffkm.mockleague.ranking.dto.MyRankingResponse;
 import com.jeffkm.mockleague.ranking.dto.RankingResponse;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
@@ -26,10 +28,13 @@ public class RankingService {
 
   private final ContestRepository contestRepository;
   private final RankingRepository rankingRepository;
+  private final ReadCache readCache;
 
-  public RankingService(ContestRepository contestRepository, RankingRepository rankingRepository) {
+  public RankingService(ContestRepository contestRepository, RankingRepository rankingRepository,
+      ReadCache readCache) {
     this.contestRepository = contestRepository;
     this.rankingRepository = rankingRepository;
+    this.readCache = readCache;
   }
 
   /**
@@ -54,7 +59,7 @@ public class RankingService {
     Contest contest = findContest(contestId);
     return rankingRepository.latestSnapshot(contestId)
         .map(s -> new RankingResponse(s.tradingDay(), s.tickNo(), contest.tickStartAt(s.tradingDay(), s.tickNo()),
-            s.participants(), rankingRepository.top(s.id(), limit).stream().map(e -> toDto(contest, e)).toList()))
+            s.participants(), topEntries(s.id(), limit).stream().map(e -> toDto(contest, e)).toList()))
         .orElse(new RankingResponse(null, null, null, 0, List.of()));
   }
 
@@ -69,6 +74,16 @@ public class RankingService {
             s.participants(),
             rankingRepository.entryOfUser(s.id(), userId).map(e -> toDto(contest, e)).orElse(null)))
         .orElse(new MyRankingResponse(null, null, null, 0, null));
+  }
+
+  /**
+   * 스냅샷의 상위 limit 명. 캐시 키는 (스냅샷 id, limit). 스냅샷은 머리와 줄이 한 트랜잭션으로 커밋되므로
+   * 보이는 순간 이미 완성돼 있고, 그 뒤로 바뀌지 않는다 → 무효화가 필요 없다.
+   * "가장 최근 스냅샷이 무엇인지"는 캐시하지 않는다(새 스냅샷이 생기면 바로 바뀌어야 하므로). 그 쿼리는 인덱스 한 번이다.
+   */
+  private List<RankingRepository.Entry> topEntries(Long snapshotId, int limit) {
+    return readCache.get(ReadCache.RANKING_TOP, snapshotId + ":" + limit,
+        () -> new ArrayList<>(rankingRepository.top(snapshotId, limit)), entries -> true);
   }
 
   private Contest findContest(Long contestId) {

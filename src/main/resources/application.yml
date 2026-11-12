@@ -20,11 +20,29 @@ spring:
           time_zone: Asia/Seoul
   flyway:
     enabled: true
+  # 4주차② 조회 캐시(common/ReadCache). none | caffeine(서버 메모리) | redis. 비교 결과는 ROADMAP 19단계
+  # 기본은 caffeine: 키에 버전(틱, 스냅샷 id)이 들어 있어 서버마다 따로 들고 있어도 값이 어긋나지 않는다
+  cache:
+    type: ${CACHE_TYPE:caffeine}
+    cache-names: latestPrices,rankingTop
+    caffeine:
+      spec: maximumSize=10000,expireAfterWrite=10m
+    redis:
+      time-to-live: 10m
+      key-prefix: "league:v1:"   # 저장 형식(클래스)이 바뀌면 v2 로 올려 예전 값과 섞이지 않게 한다
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6380}
+      timeout: 500ms             # Redis 가 멈추면 오래 기다리지 말고 DB 로 넘어간다(기본값은 60초)
 
 server:
   port: 8080
 
 management:
+  health:
+    redis:
+      enabled: ${REDIS_HEALTH:false}   # 캐시를 Redis 로 쓸 때만 켠다. 안 쓰는데 켜 두면 Redis 가 없다고 DOWN 이 된다
   endpoints:
     web:
       exposure:

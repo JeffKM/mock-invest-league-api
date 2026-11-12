@@ -2,6 +2,7 @@ package com.jeffkm.mockleague.ranking;
 
 import com.jeffkm.mockleague.contest.TickPosition;
 import com.jeffkm.mockleague.market.PriceTickRepository;
+import java.io.Serializable;
 import java.sql.Date;
 import java.time.LocalDate;
 import java.util.List;
@@ -21,7 +22,8 @@ public class RankingRepository {
 
   public record Snapshot(Long id, LocalDate tradingDay, int tickNo, int participants) {}
 
-  public record Entry(int rank, Long participantId, String nickname, long totalAssets) {}
+  /** Serializable: 순위표 캐시(Redis)가 바이트로 바꿔 저장한다. */
+  public record Entry(int rank, Long participantId, String nickname, long totalAssets) implements Serializable {}
 
   private final JdbcTemplate jdbc;
 

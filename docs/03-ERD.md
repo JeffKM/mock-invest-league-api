@@ -112,7 +112,7 @@ erDiagram
 
 ```
 com.jeffkm.mockleague
-├─ common      ApiResponse, 예외, 에러 코드, 시간(Clock) 설정
+├─ common      ApiResponse, 예외, 에러 코드, 시간(Clock) 설정, 조회 캐시(ReadCache)
 ├─ user        사용자(1주차는 X-User-Id 헤더)
 ├─ contest     대회 생성·상태 전이·참가
 ├─ company     가상 상장사 조회

@@ -113,10 +113,10 @@ public class PriceTickRepository {
    * 결과는 ROADMAP 18단계와 perf/QueryPerformanceExperiment 참고.
    */
   public static final String LATEST_PRICES_SQL = """
-      select cl.company_id, p.price
+      select cl.company_id, p.price, p.trading_day, p.tick_no
         from contest_listings cl
         cross join lateral (
-          select pt.price
+          select pt.price, pt.trading_day, pt.tick_no
             from price_ticks pt
            where pt.contest_id = cl.contest_id and pt.company_id = cl.company_id
              and (pt.trading_day, pt.tick_no) <= (?, ?)
@@ -126,12 +126,23 @@ public class PriceTickRepository {
        where cl.contest_id = ?
       """;
 
-  /** 지점 at 까지(포함) 각 종목의 가장 최근 가격. at 보다 뒤(미래)의 행은 조건에서 빠진다(I11). */
-  public Map<Long, Long> latestPricesUpTo(Long contestId, TickPosition at) {
+  /**
+   * 지점 at 까지(포함)의 각 종목 최신 가격. at 보다 뒤(미래)의 행은 조건에서 빠진다(I11).
+   *
+   * @param complete 모든 종목의 가격이 정확히 at 의 행에서 왔는가. 거짓이면 at 의 가격이 아직 안 만들어져
+   *     예전 가격으로 채워진 것이다(가격 생성이 밀린 경우). 그런 결과는 캐시하면 안 된다: 나중에 가격이 생기면 틀린 값이 된다.
+   */
+  public record LatestPrices(Map<Long, Long> prices, boolean complete) {}
+
+  public LatestPrices latestPricesUpTo(Long contestId, TickPosition at) {
     Map<Long, Long> prices = new HashMap<>();
+    boolean[] complete = {true};
     jdbc.query(LATEST_PRICES_SQL, rs -> {
       prices.put(rs.getLong("company_id"), rs.getLong("price"));
+      if (!rs.getObject("trading_day", LocalDate.class).equals(at.day()) || rs.getInt("tick_no") != at.tick()) {
+        complete[0] = false;
+      }
     }, Date.valueOf(at.day()), at.tick(), contestId);
-    return prices;
+    return new LatestPrices(prices, complete[0]);
   }
 }

@@ -13,5 +13,12 @@ services:
     volumes:
       - league-pgdata:/var/lib/postgresql/data
 
+  # 4주차② 캐시 비교용(CACHE_TYPE=redis 로 앱을 띄울 때만 필요). 포트 6380: 다른 프로젝트의 6379와 겹치지 않게
+  redis:
+    image: redis:7-alpine
+    container_name: league-redis
+    ports:
+      - "6380:6379"
+
 volumes:
   league-pgdata:
