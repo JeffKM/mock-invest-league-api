@@ -1,5 +1,7 @@
 package com.jeffkm.mockleague.contest;
 
+import com.jeffkm.mockleague.common.BusinessException;
+import com.jeffkm.mockleague.common.ErrorCode;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
@@ -8,8 +10,10 @@ import jakarta.persistence.GeneratedValue;
 import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.Table;
+import java.time.Duration;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.LocalTime;
 import org.hibernate.annotations.CreationTimestamp;
 
@@ -115,6 +119,30 @@ public class Contest {
 
   public boolean isRunning() {
     return status == ContestStatus.RUNNING;
+  }
+
+  /** 참가는 시작 전(SCHEDULED)과 진행 중(RUNNING)에만 받는다(F3). */
+  public boolean isJoinable() {
+    return status == ContestStatus.SCHEDULED || status == ContestStatus.RUNNING;
+  }
+
+  /**
+   * 지금 주문을 받을 수 있으면 현재 틱 번호를, 아니면 업무 예외를 돌려준다(I9).
+   * 장 시간은 [open, close) 반열린 구간이다. 15:30 정각은 이미 마감이다.
+   * 현재 시각은 부르는 쪽이 Clock 으로 구해 넘긴다(엔티티는 시계를 모른다 → 테스트가 쉽다).
+   */
+  public int openTickAt(LocalDateTime now) {
+    if (!isRunning()) {
+      throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
+    }
+    LocalDate day = now.toLocalDate();
+    LocalTime time = now.toLocalTime();
+    boolean inPeriod = !day.isBefore(startsOn) && !day.isAfter(endsOn);
+    boolean inHours = !time.isBefore(openTime) && time.isBefore(closeTime);
+    if (!inPeriod || !inHours) {
+      throw new BusinessException(ErrorCode.MARKET_CLOSED);
+    }
+    return (int) (Duration.between(openTime, time).getSeconds() / tickSeconds);
   }
 
   public Long getId() {

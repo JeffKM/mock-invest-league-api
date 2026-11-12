@@ -22,7 +22,8 @@
 | 9 | CompanyRepository와 테스트 | 완료 |
 | 10 | 나머지 엔티티(User·Contest·ContestListing·Participant·Holding·Order·CashLedger) | 완료 |
 | 11 | 테스트 구조(공용 컨테이너·단위 테스트·매핑 테스트) | 완료 |
-| 12 | 시장가 주문 서비스(직접 짜기) | 다음 |
+| 12 | 시장가 주문 서비스(수수료·장 시간·참가·주문·내 계좌 API) | 완료 |
+| 13 | Swagger 확인, 1주차 "왜" 노트, 2주차 동시성 실험 | 다음 |
 
 6주 전체 일정:
 
@@ -873,24 +874,188 @@ void I1_DB의_CHECK_제약은_서비스를_우회한_음수_잔고도_거부한�
 
 ---
 
-# 12단계. 다음 할 일: 시장가 주문(직접 짜기)
+# 12단계. 시장가 주문 서비스
 
-- 1주차는 가격 엔진이 없으므로 임시 현재가 = `ContestListing.getBasePrice()`.
-- 이제 엔티티가 규칙을 갖고 있으므로, 서비스는 **순서와 트랜잭션 경계**만 책임진다.
-- `OrderService.placeMarketOrder` 하나의 `@Transactional` 안에서:
-  1. 같은 키의 주문이 이미 있으면 그 결과를 돌려준다(`findByParticipantIdAndIdempotencyKey`)
-  2. 대회 진행 중·장 시간인지 확인(`Contest.isRunning()`, 장 시간 판단은 `Clock`으로 직접 작성)
-  3. 현재가로 금액·수수료 계산(수수료 함수는 직접 작성: 원 미만 버림)
-  4. 매수: `participant.withdraw(금액 + 수수료)`, `holding.increase(...)` / 매도: `holding.decrease(...)`, `participant.deposit(금액 − 수수료)`
-  5. `Order.market(...)` 저장 → `order.fill(...)`
-  6. 원장 `BUY`/`SELL`, `FEE` 기록
-- 일부러 아직 락을 걸지 않는다. 2주차에 동시 요청 100개로 갱신 손실을 재현한 뒤 세 가지 방법(비관적 락, 낙관적 락, 조건부 UPDATE)을 비교한다.
-- 통합 테스트:
-  - 매수 후 현금 = 초기 자금 − 금액 − 수수료
-  - 잔고 초과 매수 → 409, 잔고 그대로(트랜잭션 롤백 확인)
-  - 보유 초과 매도 → 409, 보유 그대로
-  - I5: 여러 번 사고판 뒤 `cash + reserved_cash = Σ 원장`(INITIAL 포함)
-  - 같은 `Idempotency-Key` 순차 두 번 → 주문 1건
+## 한 일
+
+1주차의 마지막 큰 덩어리다. 사용자가 대회에 참가해 시장가로 사고팔고 내 계좌를 보는 흐름 전체를 API로 만들었다.
+
+| 만든 것 | 파일 | 지키는 불변식 |
+|---|---|---|
+| 수수료 함수 | `order/FeePolicy` | I4 |
+| 장 시간 판단 | `Contest.openTickAt(now)` | I9 |
+| 임시 현재가 | `market/PriceProvider`, `ListingBasePriceProvider` | — |
+| 사용자 생성 | `POST /api/users` | — |
+| 대회 생성·시작(관리자) | `POST /api/admin/contests`, `POST /api/admin/contests/{id}/start` | — |
+| 참가 | `POST /api/contests/{id}/participants` | I5 출발점 |
+| 시장가 주문 | `POST /api/contests/{id}/orders` | I1·I2·I4·I5·I6·I9 |
+| 내 계좌 | `GET /api/contests/{id}/me` | F12 |
+
+호출 흐름은 **컨트롤러 → 서비스(트랜잭션) → 엔티티(규칙) → 리포지토리** 순서다.
+
+- 컨트롤러는 HTTP를 서비스 호출로 바꾸는 일만 한다.
+- 서비스는 순서와 트랜잭션 경계를 책임진다.
+- 엔티티는 규칙을 지킨다.
+
+## 12-1. 수수료 함수(I4)
+
+```java
+public static long fee(long amount, int feeBp) {
+  if (amount < 0 || feeBp < 0 || feeBp > BP_DENOMINATOR) {
+    throw new IllegalArgumentException(...);
+  }
+  return Math.multiplyExact(amount, (long) feeBp) / BP_DENOMINATOR;
+}
+```
+
+**한 줄씩 왜**
+- **계산을 한 곳에만 둔다.** 매수 쪽은 반올림, 매도 쪽은 버림처럼 서로 다르게 계산하면 1원씩 어긋나고, 원장 합계(I5)가 깨진다.
+- **`/ 10_000`(정수 나눗셈)이 곧 버림이다.** 금액과 비율이 모두 0 이상이라 Java 정수 나눗셈의 0 방향 버림이 내림과 같다. 음수를 허용했다면 −0.5가 0이 되어 내림이 아니게 된다. 입구에서 음수를 막는 이유다.
+- **`multiplyExact`를 쓴다.** 그냥 `*`는 long 범위를 넘으면 조용히 음수가 된다. "수수료가 음수라 오히려 돈을 받는" 버그가 생긴다. 예외가 나는 편이 안전하다.
+- **경계값을 테스트한다.** 199원은 0.995원이라 0원, 200원은 1원, 1,999원은 9원이다(반올림이었다면 10원). 반올림과 버림의 차이가 드러나는 값을 골랐다.
+
+## 12-2. 장 시간 판단(I9): `Contest.openTickAt(now)`
+
+```java
+public int openTickAt(LocalDateTime now) {
+  if (!isRunning()) throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
+  boolean inPeriod = !day.isBefore(startsOn) && !day.isAfter(endsOn);
+  boolean inHours  = !time.isBefore(openTime) && time.isBefore(closeTime);
+  if (!inPeriod || !inHours) throw new BusinessException(ErrorCode.MARKET_CLOSED);
+  return (int) (Duration.between(openTime, time).getSeconds() / tickSeconds);
+}
+```
+
+**한 줄씩 왜**
+- **장 시간은 반열린 구간 `[09:00, 15:30)`이다.** 15:30 정각은 이미 마감이다. 끝을 포함하면 "15:30:00에 들어온 주문"이 장중인지 애매해진다. 시간 구간은 보통 시작을 포함하고 끝을 제외한다.
+- **엔티티는 시계를 모르고, 현재 시각을 인자로 받는다.** 엔티티 안에서 `LocalDateTime.now()`를 부르면 테스트가 실제 시각에 따라 통과했다 실패했다 한다. 인자로 받으면 `DAY.atTime(15, 30)`처럼 원하는 시각을 그대로 넣을 수 있다(`MarketHoursTest`).
+- **틱 번호는 개장 후 지난 초를 틱 길이(300초)로 나눈 값이다.** 09:00~09:04:59가 0번, 15:29가 77번이라 하루에 78틱이다. 3주차 가격 엔진이 이 번호로 가격을 찾는다.
+- **한 메서드가 확인과 틱 계산을 같이 한다.** 따로 두면 서비스에서 확인을 빼먹고 틱만 계산하는 실수가 가능하다. "장이 열려 있을 때만 틱 번호가 나온다"를 구조로 강제한 것이다.
+- 1주차는 주말도 거래일로 본다. 3주차에 거래일 규칙을 정할 때 다시 본다.
+
+## 12-3. 현재가: `PriceProvider` 인터페이스
+
+```java
+public interface PriceProvider {
+  long currentPrice(Long contestId, Long companyId);
+  Map<Long, Long> currentPrices(Long contestId);
+}
+```
+
+**왜**
+- **가격 엔진이 아직 없어서 1주차 구현은 상장 기준가를 그대로 돌려준다.** 3주차에 틱 가격 구현으로 바꿀 때 주문·계좌 서비스는 한 줄도 안 고친다. 서비스가 구현이 아니라 인터페이스에 의존하기 때문이다. 의존성 주입(DI)이 실제로 쓸모 있는 장면이다.
+- **`currentPrices`(전체 한 번에)를 따로 둔다.** 내 계좌 화면에서 보유 종목마다 가격을 따로 물으면 종목 수만큼 쿼리가 나간다(N+1과 같은 모양). 대회 전체 가격을 쿼리 한 번에 가져와 Map으로 찾는다.
+
+## 12-4. 주문 서비스: 하나의 트랜잭션, 여섯 단계
+
+```java
+@Transactional
+public OrderResponse placeMarketOrder(contestId, userId, idempotencyKey, request) {
+  // 0) 키 검사, 참가자 찾기(없으면 404 NOT_PARTICIPANT)
+  // 1) 같은 키 주문이 있으면 → replay (다시 실행하지 않음)
+  // 2) Instant at = clock.instant(); now = ...; tick = contest.openTickAt(now)
+  // 3) price = priceProvider.currentPrice(...); amount = price × qty; fee = FeePolicy.fee(...)
+  // 4) BUY : participant.withdraw(amount + fee); holding.increase(qty, amount)
+  //    SELL: holding.decrease(qty); participant.deposit(amount − fee)
+  // 5) Order.market(...) → order.fill(price, fee, tick, at) → save
+  // 6) 원장 BUY/SELL(amount), FEE(fee) 기록
+}
+```
+
+**한 줄씩 왜**
+- **`@Transactional` 하나로 감싼다.** 4단계에서 돈이 빠진 뒤 6단계에서 실패하면 "돈은 빠졌는데 주식은 없는" 상태가 남는다. 하나의 트랜잭션이면 중간 어디서 예외가 나도 전부 롤백된다. 트랜잭션을 컨트롤러가 아니라 서비스에 두는 이유는 "하나의 업무 단위"를 아는 곳이 서비스이기 때문이다.
+- **멱등 확인(1단계)을 장 시간 확인(2단계)보다 먼저 한다.** 15:29:59에 체결된 주문의 응답이 네트워크에서 사라져 클라이언트가 15:30:01에 다시 보낸다고 하자. 장 시간을 먼저 보면 "장 마감" 오류가 나서, 사용자는 체결됐는지 모르게 된다. 멱등을 먼저 보면 "체결됐다"는 처음 응답을 그대로 돌려준다(`I6_장이_닫힌_뒤_재전송해도_처음_결과를_돌려준다` 테스트).
+- **같은 키에 다른 내용을 보내면 422 오류를 낸다.** 키가 같은데 수량이 다르면 클라이언트 버그다. 조용히 처음 결과를 주면 사용자는 11주를 샀다고 착각한다. Stripe 같은 결제 API도 같은 방식이다.
+- **현재 시각은 한 번만 구한다(`Instant at`).** `now()`를 여러 번 부르면 15:29:59.999와 15:30:00.001 사이에 걸쳐 "틱은 77번인데 체결 시각은 마감 후"처럼 어긋날 수 있다.
+- **매수는 `withdraw(amount + fee)` 한 번으로 뺀다.** 금액과 수수료를 따로 빼면 금액은 빠지고 수수료에서 잔고가 부족해 실패하는 중간 상태가 생긴다. 롤백되긴 하지만, 한 번에 검사하면 애초에 그런 상태가 없다. `addExact`는 합이 넘치는 경우를 막는다.
+- **매도는 `decrease`를 먼저, `deposit`을 나중에 한다.** 수량이 부족하면 돈을 넣기 전에 실패한다. 순서를 바꿔도 롤백되지만, "검증이 실패할 수 있는 것을 먼저" 하는 습관이 안전하다.
+- **보유가 없으면 `holdingRepository.save(Holding.empty(...))`의 반환값을 쓴다.** `Holding`은 id(복합키)를 직접 넣는 엔티티라 Spring Data가 새 엔티티인지 알 수 없다. 그래서 `save`가 `persist` 대신 `merge`를 부르고, merge는 **넘긴 객체가 아니라 관리되는 복사본을 돌려준다.** 넘긴 객체를 계속 고치면 그 변경은 저장되지 않는다. 그래서 반환값을 받아 `increase`한다.
+- **주문을 먼저 저장하고 원장을 나중에 저장한다.** 원장의 `order_id`가 주문을 가리키는 외래키라 주문이 먼저 있어야 한다. `IDENTITY` 전략이라 `save` 순간 INSERT되어 id가 생긴다(11단계에서 본 내용).
+- **원장은 거래 금액과 수수료를 두 줄로 남긴다.** 합쳐서 한 줄로 남기면 "이 대회에서 수수료로 얼마 냈나"를 나중에 계산할 수 없다. 수수료가 0원이면 남기지 않는다(`record`는 0원을 거부한다).
+- **참가자와 보유는 `save`를 다시 부르지 않는다.** 트랜잭션 안에서 조회한 엔티티는 영속성 컨텍스트가 관리하므로, 커밋 때 바뀐 필드를 찾아 UPDATE를 만든다(더티 체킹).
+- **일부러 락을 걸지 않았다.** 잔고를 읽고 → 계산하고 → 덮어쓰는 동안 같은 계좌 요청이 동시에 오면 갱신 손실이 생길 수 있다. 2주차에 이 문제를 먼저 재현하고, 그다음 락 방식들을 비교해 고친다. 서비스 클래스 주석에 이 사실을 적어 두었다.
+
+## 12-5. 참가: 계좌와 INITIAL 원장을 한 트랜잭션에
+
+```java
+Participant participant = participantRepository.save(Participant.join(contest, user));
+ledgerRepository.save(CashLedger.record(participant, LedgerEntryType.INITIAL, participant.getCash(), null));
+```
+
+- **둘이 한 트랜잭션이어야 한다.** 계좌만 생기고 원장이 빠지면 "현금 10,000,000 vs 원장 합계 0"으로 I5가 처음부터 깨진다.
+- **이미 참가했는지 먼저 확인하고(친절한 409), 동시 요청은 DB 유니크 `(contest_id, user_id)`가 막는다.** 확인과 저장 사이에 다른 요청이 끼어들 수 있으므로 코드 확인만으로는 부족하다. 동시에 들어와 DB 제약에 걸리면 `DataIntegrityViolationException`이 나고, 예외 처리기가 409 `DATA_CONFLICT`로 바꾼다.
+
+## 12-6. 내 계좌: 쿼리 수를 세는 습관
+
+```java
+@Query("select h from Holding h join fetch h.company where h.id.participantId = :pid and h.quantity > 0 ...")
+```
+
+- **`join fetch`를 쓴다.** 없으면 보유 종목마다 `company`를 지연 로딩하는 SELECT가 따로 나간다(N+1). 보유 10종목이면 11번이다. `join fetch`는 회사 정보까지 한 번에 가져온다.
+- **`@Transactional(readOnly = true)`.** 읽기만 하는 메서드에 붙이면 Hibernate가 변경 추적(스냅샷 비교)을 생략해 조금 가볍다. "이 메서드는 아무것도 바꾸지 않는다"는 표시이기도 하다.
+- **총자산은 현금 + 묶인 현금 + Σ(수량 × 현재가)이다.** F12의 순위 기준과 같은 식이다. 1주차는 가격이 움직이지 않으므로 총자산은 "초기 자금 − 낸 수수료"가 된다. 테스트가 이 사실로 계산을 검증한다.
+
+## 12-7. DTO와 응답
+
+- **엔티티를 그대로 응답하지 않고 record DTO로 바꾼다.** 엔티티를 그대로 내보내면 지연 로딩 필드가 직렬화되며 오류가 나거나 쿼리가 더 나간다. 또 내부 필드(`version` 등)가 API 계약이 되어 버린다.
+- **주문 응답에는 "주문 후 잔고"를 넣지 않았다.** 같은 키로 다시 보냈을 때 처음과 같은 응답을 줘야 하는데(I6), 잔고는 그 사이 바뀔 수 있다. 응답에는 주문 시점에 확정된 사실만 담는다.
+- **요청 검증(`@Valid`)**: 수량 1~1,000,000, 종목 코드 필수, 매수·매도 필수. 수량 상한은 `가격 × 수량`이 long을 넘지 않게 하는 입구 방어선이다.
+
+## 12-8. 시간을 다루는 두 가지 장치
+
+- **테스트용 `MutableClock`.** `Clock.fixed`는 한 번 정하면 못 바꾼다. 테스트 중간에 "장 마감 후"로 옮기려고 `set()`이 있는 시계를 만들고 `@Primary` 빈으로 등록했다. 운영 코드는 `Clock` 타입만 알기 때문에 바뀐 줄 모른다.
+- **로컬용 `league.clock.fixed`.** 실제 시계를 쓰면 밤이나 대회 기간 밖에는 Swagger에서 주문이 전부 `MARKET_CLOSED`다. 이 설정을 주면 서버 시계가 그 시각에 멈춘다.
+
+```bash
+./gradlew bootRun --args='--league.clock.fixed=2026-12-01T10:00:00'
+```
+
+## 12-9. 겪은 일: Spring 표준 오류가 500이 되었다
+
+실제 앱을 띄워 `curl`로 확인하다가 발견했다. 원래는 확인 스크립트의 Content-Type 헤더 실수였는데, 그 결과가 **500 INTERNAL_ERROR와 ERROR 로그**로 나왔다.
+
+- **원인.** `@ExceptionHandler(Exception.class)`가 모든 예외를 500으로 바꿨다. 그 안에 Spring MVC가 던지는 예외도 들어 있었다. 없는 경로(404), 허용 안 된 메서드(405), 지원 안 하는 Content-Type(415)이 모두 클라이언트 잘못인데 서버 장애처럼 보였다.
+- **해결.** 이 예외들은 `ErrorResponse` 인터페이스를 구현하고 자기 상태 코드를 들고 있다. `e instanceof ErrorResponse`이면 그 상태 코드를 그대로 쓴다. 테스트 `Spring_표준_오류는_500이_아니라_원래_상태_코드로_답한다`로 고정했다.
+- **교훈.** "모든 예외를 잡는 처리기"는 편하지만, 클라이언트 오류까지 장애 알람을 울리게 만든다. 운영에서 500 비율로 알람을 걸면 가짜 알람이 쏟아진다.
+
+## 결과
+
+- 테스트 **59개** 통과
+  - 단위 33: 수수료 5, 장 시간 5 추가
+  - 매핑·리포지토리 10
+  - 주문 API 통합 15
+  - 기동 1
+- 실제 앱 확인: 참가 → SBSI 3주 매수 → 내 계좌. 현금 9,746,740원(= 10,000,000 − 252,000 − 1,260), 총자산 9,998,740원.
+
+## 외울 것
+
+- **Q. 주문 처리를 왜 하나의 `@Transactional`로 묶었나?**
+  → 잔고 차감, 보유 증가, 주문 저장, 원장 기록 중 하나라도 실패하면 전부 취소돼야 돈이 맞기 때문이다. 경계는 업무 단위를 아는 서비스에 둔다.
+- **Q. 멱등성을 어떻게 보장했나?**
+  → 계좌와 `Idempotency-Key`에 DB 유니크 제약을 걸었다. 서비스는 먼저 같은 키 주문을 찾아, 있으면 다시 실행하지 않고 처음 결과를 돌려준다. 키가 같은데 내용이 다르면 422다. 동시에 같은 키가 두 번 오는 경우는 유니크 제약이 막고, 응답을 다듬는 일은 2주차에 한다.
+- **Q. 멱등 확인을 왜 장 시간 확인보다 먼저 하나?**
+  → 마감 직전에 체결된 주문을 마감 후에 재전송하면, 장 시간을 먼저 볼 경우 "장 마감" 오류가 나서 체결 사실을 알 수 없다.
+- **Q. 수수료는 왜 버림이고 어디서 계산하나?**
+  → 규칙(I4)으로 정했고, 계산은 `FeePolicy` 한 곳에서만 한다. 여러 곳에서 계산하면 1원 오차가 원장 합계를 깨뜨린다. 곱셈은 `multiplyExact`로 넘침을 막는다.
+- **Q. 현재 시각을 왜 `Clock` 빈으로 받나?**
+  → 테스트에서 시각을 마음대로 정하려고. "15:30 정각은 마감" 같은 경계를 실제 시각과 무관하게 재현할 수 있다.
+- **Q. `save()`의 반환값을 왜 받아 썼나?**
+  → id를 직접 넣는 엔티티는 Spring Data가 새것인지 몰라 `merge`를 부르고, merge는 관리되는 복사본을 돌려준다. 넘긴 객체를 고치면 반영되지 않는다.
+- **Q. 이 코드의 알려진 문제는?**
+  → 락이 없어 같은 계좌로 동시 요청이 오면 갱신 손실이 날 수 있다. 일부러 남겼고, 2주차에 재현 → 비관적 락·낙관적 락·조건부 UPDATE 비교 → 선택의 순서로 고친다.
+- **Q. N+1을 어디서 막았나?**
+  → 내 계좌 조회에서 보유와 회사를 `join fetch`로 한 번에 가져오고, 가격도 대회 전체를 한 번에 가져와 Map으로 찾는다.
+
+---
+
+# 13단계. 다음 할 일: 1주차 마무리와 2주차 동시성
+
+- **Swagger에서 직접 눌러 보기.** 사용자 생성 → 대회 생성·시작 → 참가 → 매수·매도 → 내 계좌. `league.clock.fixed` 설정이 필요하다.
+- **`docs/notes/week1-왜.md` 1쪽.** 주제는 복합키 방식, 트랜잭션 경계, 원장을 따로 둔 이유다. 이 문서의 8·10·12단계를 내 말로 줄이면 된다.
+- **2주차.**
+  - 같은 계좌로 매수 100건을 동시에 보내 갱신 손실을 재현하는 테스트를 만든다(`ExecutorService` + `CountDownLatch`).
+  - 세 가지 방식으로 고치고 결과를 비교표로 만든다: 비관적 락(`SELECT ... FOR UPDATE`), 낙관적 락(`@Version` + 재시도), 조건부 UPDATE(`update ... set cash = cash - ? where cash >= ?`).
+  - 같은 키 주문이 동시에 2건 들어오는 경우 처리.
 
 ---
 
@@ -899,6 +1064,7 @@ void I1_DB의_CHECK_제약은_서비스를_우회한_음수_잔고도_거부한�
 ```bash
 docker compose up -d                       # 로컬 DB 켜기
 ./gradlew bootRun                          # 앱 실행 → http://localhost:8080/swagger-ui.html
+./gradlew bootRun --args='--league.clock.fixed=2026-12-01T10:00:00'  # 시계 고정(밤에도 주문 가능)
 ./run_tests.sh                             # 전체 테스트
 ./run_tests.sh --tests '*Company*'         # 일부 테스트만
 open build/reports/tests/test/index.html   # 테스트 결과
