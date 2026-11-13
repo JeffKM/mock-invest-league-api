@@ -1,12 +1,12 @@
 # 배포: AWS EC2 + RDS
 
-> 5주차②. 코드와 스크립트는 준비돼 있다. 계정·결제·서버 만들기는 직접 한다.
-> 금액은 서울 리전 기준 대략값이다. 만들기 전에 [AWS 요금 계산기](https://calculator.aws/)로 다시 확인한다.
+> 5주차②에 준비하고, 6주차에 실제로 올렸다(ROADMAP 23단계). 계정·비밀값·서버 만들기는 직접 한다.
+> **리전은 시드니(ap-southeast-2)다.** 무료 플랜 계정은 리전이 하나로 고정되고, 이 계정은 시드니였다(3절). 금액은 대략값이다. [AWS 요금 계산기](https://calculator.aws/)로 다시 확인한다.
 
 ## 1. 구성
 
 ```
-k6(노트북) ──HTTP:80──▶ EC2 t3.micro (Docker: league-app)
+k6(노트북, 한국) ──HTTP:80──▶ EC2 t3.micro (시드니, Docker: league-app)
                           │  이미지: ghcr.io/jeffkm/mock-invest-league-api:<커밋 sha>
                           └──5432(같은 VPC 안)──▶ RDS PostgreSQL 16 (db.t4g.micro, 인터넷에서 접근 불가)
 ```
@@ -25,7 +25,7 @@ k6(노트북) ──HTTP:80──▶ EC2 t3.micro (Docker: league-app)
 - 24시간 켜 두면 한 달 약 $30~37이 크레딧에서 빠진다. 크레딧 $200이면 약 5~6개월, $100만 받았으면 약 3개월이다. **데모할 때만 켜면** 훨씬 오래 간다.
 - **주의:** 유료 플랜으로 바꾸면 크레딧을 넘는 사용량은 그때부터 청구된다. 2025년 7월 15일 이전에 만든 계정은 예전 조건(12개월 동안 t2/t3.micro·RDS micro 750시간 무료)을 따른다. 내 계정의 크레딧 잔액과 남은 기간은 콘솔 **Billing → Free Tier / Credits**에서 확인한다.
 
-정가(서울 리전, 대략):
+정가(대략. 시드니는 서울과 비슷하거나 조금 비싸다):
 
 | 항목 | 사양 | 한 달(24시간 켜 둘 때) |
 |---|---|---|
@@ -42,7 +42,9 @@ k6(노트북) ──HTTP:80──▶ EC2 t3.micro (Docker: league-app)
 
 1. AWS 가입(직접). 플랜을 고르는 화면에서 **무료 플랜(Free plan)**을 고른다(2절). 루트 계정에 **MFA**를 켠다.
 2. **예산 알림부터 만든다.** Billing → Budgets → 월 $10(또는 원하는 금액), 80%·100%에서 메일. 설정 실수로 과금되는 것을 가장 먼저 막는다.
-3. 리전을 **서울(ap-northeast-2)**로 고정한다.
+3. **리전 확인.** 무료 플랜 계정은 "프로젝트"에 리전이 하나 정해져 있고, 다른 리전에 들어가면 "리전 사용 불가"가 뜬다(유료 플랜으로 올려야 풀린다). 이 계정은 **시드니(ap-southeast-2)**였다. 새 콘솔에는 리전 메뉴가 없어서, 주소창의 `region=`으로 지금 리전을 확인한다.
+   - 한국에서 시드니까지 왕복 약 0.13~0.3초가 응답 시간에 더해진다. 데모에는 지장 없고, 측정할 때는 따로 재서 뺀다(9절).
+4. 시작 화면의 "무엇을 생성하시겠습니까?"와 "AWS용 에이전트 툴킷"은 건너뛴다. 툴킷은 이 맥에 AWS 키를 두고 에이전트가 리소스를 만들게 하는 것이라, 리소스 몇 개뿐인 지금은 위험만 늘린다.
 
 ## 4. 보안 그룹 두 개
 
@@ -54,21 +56,22 @@ k6(노트북) ──HTTP:80──▶ EC2 t3.micro (Docker: league-app)
 
 ## 5. RDS 만들기
 
-- 엔진: PostgreSQL 16. 템플릿: 무료 플랜이 보이면 그것, 아니면 "개발/테스트"
+- 엔진: PostgreSQL **16.x 중 가장 높은 것**(기본값 18이 아니라. 로컬·테스트가 16이다). "RDS 확장 지원"은 끈다. 템플릿: 무료 플랜
 - 인스턴스: db.t4g.micro, 단일 AZ
 - 저장 공간: gp3 20GB, **자동 확장 끄기**
-- 마스터 사용자 `league`, 비밀번호는 직접 정해서 비밀번호 관리자에 저장한다
-- 연결: **퍼블릭 액세스 "아니요"**, 보안 그룹 `league-db`
+- 마스터 사용자 `league`, 자격 증명 관리는 **자체 관리**(Secrets Manager는 따로 요금), 비밀번호는 직접 정해서 비밀번호 관리자에 저장한다
+- 연결: **퍼블릭 액세스 "아니요"**, 보안 그룹은 `league-db`를 넣고 **미리 골라져 있는 `default`를 반드시 뺀다**(9-1절 ①). 향상된 모니터링은 끈다
 - 추가 구성: **초기 데이터베이스 이름 `league`**(비우면 DB가 안 만들어진다), 자동 백업 7일
-- 만든 뒤 "엔드포인트"를 적어 둔다(예: `league.xxxx.ap-northeast-2.rds.amazonaws.com`)
+- 만든 뒤 "연결 및 보안"에서 **엔드포인트**와 **VPC 보안 그룹이 `league-db` 하나인지** 확인한다(예: `league.xxxx.ap-southeast-2.rds.amazonaws.com`)
 
 PostgreSQL 15부터 RDS는 기본으로 SSL 연결만 받는다. 그래서 `DB_URL`에 `?sslmode=require`를 붙인다. 테이블은 앱이 처음 뜰 때 Flyway가 만든다.
 
 ## 6. EC2 만들기
 
 - AMI: Amazon Linux 2023(x86_64). CI가 만드는 이미지가 x86용이라 ARM(t4g)이 아니라 **t3.micro**로 한다
-- 키 페어: 새로 만들고 `.pem`을 안전한 곳에 둔다
-- 보안 그룹: `league-app`
+- 키 페어: 새로 만들고(RSA, .pem) `mv ~/Downloads/league.pem ~/.ssh/ && chmod 400 ~/.ssh/league.pem`. 다시 받을 수 없다
+- 보안 그룹: 기존 그룹 선택 → `league-app`만
+- 스토리지: **20GiB gp3**(배포마다 이미지가 쌓여 기본 8GiB는 빠듯하다)
 - 고급 세부 정보:
   - **크레딧 사양: standard**(2절)
   - **사용자 데이터:** `deploy/ec2-setup.sh` 내용을 붙여 넣는다. Docker와 compose를 설치하고, 스왑 1GB를 만들고, `/opt/league`를 만든다
@@ -76,20 +79,33 @@ PostgreSQL 15부터 RDS는 기본으로 SSL 연결만 받는다. 그래서 `DB_U
 
 ## 7. 서버에 파일 올리기
 
+노트북에서(긴 명령은 붙여 넣을 때 줄이 잘려 깨지므로 스크립트 하나로 묶었다):
+
 ```bash
-EC2=ec2-user@<EC2 공인 IP>
-scp -i league.pem deploy/docker-compose.yml deploy/deploy.sh $EC2:/opt/league/
-scp -i league.pem deploy/.env.example $EC2:/opt/league/.env
-ssh -i league.pem $EC2
-# 서버에서
-cd /opt/league && chmod 600 .env && vi .env      # DB_URL·DB_PASSWORD·ADMIN_TOKEN 채우기
-openssl rand -hex 32                               # ADMIN_TOKEN 으로 쓸 값
+deploy/upload.sh <EC2 공인 IP>     # compose·deploy.sh 는 덮어쓰고, .env 는 서버에 없을 때만 틀을 올린다
+ssh -i ~/.ssh/league.pem ec2-user@<EC2 공인 IP>
 ```
 
-**이미지 받기 권한.** 저장소가 비공개라 ghcr.io 이미지도 비공개다. GitHub → Settings → Developer settings → Personal access tokens(classic)에서 **`read:packages` 권한만** 가진 토큰을 만들고, 서버에서 한 번 로그인한다.
+서버에서(**비밀값은 이 단계에서만, 서버 위에서 직접 다룬다**):
 
 ```bash
-docker login ghcr.io -u jeffkm     # 비밀번호 자리에 토큰
+cd /opt/league
+sed -i 's#<RDS 엔드포인트>#league.xxxx.ap-southeast-2.rds.amazonaws.com#' .env
+openssl rand -hex 32     # ADMIN_TOKEN. 비밀번호 관리자에 저장
+nano .env                # DB_PASSWORD, ADMIN_TOKEN 채우기
+```
+
+**토큰이 두 개다. 헷갈리기 쉽다(9-1절 ②).**
+
+| 토큰 | 모양 | 쓰는 곳 |
+|---|---|---|
+| GitHub 토큰(classic) | `ghp_` + 36자 = 40자 | 서버의 `docker login ghcr.io` 한 번 |
+| 관리자 토큰 | 0-9a-f 64자 | `.env`의 `ADMIN_TOKEN`, 요청의 `X-Admin-Token` 헤더 |
+
+**이미지 받기 권한.** 저장소가 비공개라 ghcr.io 이미지도 비공개다. GitHub → Settings → Developer settings → Personal access tokens → **Tokens (classic)**에서 **`read:packages` 권한만** 가진 토큰을 만들고(만료 90일. ghcr.io는 fine-grained 토큰을 받지 않는다), 서버에서 한 번 로그인한다.
+
+```bash
+docker login ghcr.io -u JeffKM     # Password 자리에 GitHub 토큰
 ```
 
 비공개 패키지는 GitHub 요금제의 Packages 저장 용량·전송량 한도에 들어간다. 오래된 이미지 버전은 저장소 → Packages에서 지운다.
@@ -116,8 +132,10 @@ cd /opt/league
 
 ```bash
 curl http://<EC2 IP>/actuator/health                     # {"status":"UP"}
+read -s TOKEN                                            # 관리자 토큰 붙여넣기(화면에 안 보인다)
 curl -X POST http://<EC2 IP>/api/admin/contests \
-  -H "X-Admin-Token: <ADMIN_TOKEN>" -H 'Content-Type: application/json' \
+  -H "X-Admin-Token: $TOKEN" \
+  -H 'Content-Type: application/json' \
   -d '{"name":"12월 리그","startsOn":"2026-12-01","endsOn":"2026-12-31"}'
 ```
 
@@ -127,18 +145,52 @@ Swagger(`/swagger-ui.html`)도 열려 있다. 관리자 API는 `X-Admin-Token` �
 
 ## 9. 배포한 서버에 k6
 
-로컬 측정(ROADMAP 21단계)은 앱·DB·k6가 한 노트북을 나눠 썼다. 배포하면 처음으로 **부하 발생기(노트북)와 앱(EC2)이 다른 기계**가 된다.
+로컬 측정(ROADMAP 21단계)은 앱·DB·k6가 한 노트북을 나눠 썼다. 배포하면 처음으로 **부하 발생기와 앱이 다른 기계**가 된다. 러너는 `scripts/load-test-remote.sh`다(서버는 건드리지 않는다).
+
+**두 군데에서 잰다.** 통과 기준(주문 p95 300ms, 조회 p95 200ms)은 서버 처리 시간을 보려는 것인데, 한국 노트북에서 시드니로 보내면 왕복만 약 0.3초다.
+
+| 어디서 | 무엇을 본다 |
+|---|---|
+| **AWS CloudShell**(콘솔 왼쪽 아래, 같은 시드니 리전, 무료) | 네트워크가 거의 없는 상태의 **서버 처리 능력**. 통과 기준은 이걸로 판단한다 |
+| **노트북**(한국) | 한국 사용자가 실제로 겪는 응답 시간. 러너가 먼저 잰 왕복 시간을 빼고 읽는다 |
 
 ```bash
-# 서버 .env 에 잠깐 ACTUATOR_EXPOSE=health,info,metrics 를 넣고 ./deploy.sh 로 다시 띄운다(끝나면 되돌린다)
-k6 run -e BASE_URL=http://<EC2 IP> -e ADMIN_TOKEN=<토큰> -e MULT=1 -e DURATION=2m \
-  -e STARTS_ON=<오늘> -e ENDS_ON=<한 달 뒤> scripts/k6/league.js
+read -s ADMIN_TOKEN; export ADMIN_TOKEN       # 관리자 토큰(64자)
+scripts/load-test-remote.sh http://<EC2 IP> 1 2m laptop      # 가정의 1배, 2분
+scripts/load-test-remote.sh http://<EC2 IP> 2 2m laptop      # 2배
 ```
 
-- 운영 서버는 시계를 고정하지 않으므로 **장 시간(평일 09:00~15:30)에** 돌려야 주문이 받아진다.
-- 대회와 사용자 1,000명이 운영 DB에 남는다. 측정용이면 끝나고 RDS를 스냅샷 없이 지우거나, 측정 전에 스냅샷을 떠 둔다.
-- 노트북과 서울 리전 사이 네트워크 왕복 시간이 응답 시간에 더해진다. `curl -w '%{time_connect}'`로 먼저 재 둔다.
-- t3.micro는 크레딧이 떨어지면 느려진다(2절). 짧게 돌리고, CloudWatch의 `CPUCreditBalance`를 같이 본다.
+CloudShell 준비(한 번): 저장소가 비공개라 `git clone` 대신 파일 두 개를 올린다(CloudShell 오른쪽 위 **작업 → 파일 업로드**).
+
+```bash
+mkdir -p league/scripts/k6 && mv league.js league/scripts/k6/ && mv load-test-remote.sh league/scripts/ && chmod +x league/scripts/*.sh
+curl -fsSLO https://github.com/grafana/k6/releases/download/v2.3.0/k6-v2.3.0-linux-amd64.tar.gz
+tar xzf k6-v2.3.0-linux-amd64.tar.gz && mkdir -p ~/.local/bin && mv k6-v2.3.0-linux-amd64/k6 ~/.local/bin/
+cd league && scripts/load-test-remote.sh http://<EC2 IP> 1 2m cloudshell
+```
+
+러너가 하는 일:
+
+1. **한국 평일 09:05~15:00가 아니면 멈춘다.** 운영 서버는 시계를 고정하지 않아 장 밖에서는 주문이 전부 거절된다. 측정 중 장이 닫히지 않게 여유를 뒀다.
+2. 오늘 시작하는 측정용 대회를 만들고 사용자 1,000명을 참가시킨다(`STARTS_ON`=오늘).
+3. 왕복 시간을 5번 재서 `rtt-summary.txt`에 남긴다.
+4. 서버 지표를 전후로 남긴다. 서버 `.env`에 잠깐 `ACTUATOR_EXPOSE=health,info,metrics`를 넣고 `./deploy.sh`로 다시 띄워야 보인다(끝나면 되돌린다. 지표를 인터넷에 열어 두지 않는다).
+5. k6를 워치독(기본 20분) 아래에서 돌리고 `build/k6/remote-<LABEL>-<시각>/`에 결과를 둔다.
+
+주의:
+
+- 측정용 대회와 사용자 1,000명이 운영 DB에 남는다. 측정 전에 RDS 스냅샷을 떠 두거나, 측정용이라 보고 그대로 둔다.
+- t3.micro는 CPU 크레딧이 떨어지면 느려진다(2절). 짧게 돌리고, CloudWatch의 `CPUCreditBalance`를 같이 본다. 서버를 켜 둔 시간만큼 크레딧이 쌓인다.
+
+## 9-1. 막혔던 곳(첫 배포)
+
+| 증상 | 원인 | 고친 것 |
+|---|---|---|
+| ① `deploy.sh`가 180초 뒤 실패, 로그 끝에 `SocketTimeoutException: Connect timed out` | RDS에 `default` 보안 그룹만 붙어 있었다. `default`는 같은 그룹끼리만 받으므로 `league-app`이 붙은 EC2의 연결이 버려졌다 | RDS 수정 → `league-db` 추가, `default` 빼기 → 즉시 적용. 재시작 없이 1~2분 |
+| ② 관리자 API가 계속 401 | GitHub 토큰(40자)을 관리자 토큰 자리에 붙여 넣었다 | 길이(`wc -c`)로 확인. 관리자 토큰은 64자 |
+| ③ `scp` 명령이 깨지고, 뒷줄의 `deploy/deploy.sh …`가 **노트북에서** 실행됨 | 긴 한 줄 명령을 붙여 넣을 때 줄바꿈이 끼었다 | `deploy/upload.sh`로 묶었다. 노트북의 `deploy.sh`는 이미지 받기에서 먼저 실패해 아무것도 바꾸지 않았다 |
+
+읽는 법: **`Connect timed out`은 네트워크(보안 그룹)**, `UnknownHostException`은 주소, `password authentication failed`는 비밀번호다. 서버에서 `timeout 5 bash -c '</dev/tcp/<RDS 엔드포인트>/5432' && echo 열림`으로 앱 없이 먼저 확인할 수 있다.
 
 ## 10. 끄기(비용 멈추기)
 

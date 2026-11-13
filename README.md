@@ -110,6 +110,7 @@ docker compose up -d          # 로컬 PostgreSQL(5433)
 ./gradlew bootRun             # http://localhost:8080/swagger-ui.html
 ./run_tests.sh                # 전체 테스트(도커 필요, 워치독 포함)
 ./scripts/load-test.sh 1 2m   # k6 부하 테스트(앱 이미지·k6 필요). 결과는 build/k6/
+./scripts/load-test-remote.sh http://<서버> 1 2m   # 배포한 서버에 k6(ADMIN_TOKEN 환경 변수, 평일 장 시간)
 ```
 
 ## 배포
@@ -117,7 +118,7 @@ docker compose up -d          # 로컬 PostgreSQL(5433)
 - **CI(GitHub Actions):** 올릴 때마다 테스트와 이미지 빌드를 합니다. main에 올라온 커밋은 커밋 sha 태그로 ghcr.io에 이미지를 올립니다.
 - **운영 설정(`prod`):** DB 주소·비밀번호·관리자 토큰은 환경 변수로만 받고, 하나라도 빠지면 앱이 뜨지 않습니다.
 - **배포 스크립트(`deploy/deploy.sh`):** 새 이미지를 띄운 뒤 헬스 체크를 기다리고, 실패하면 직전 이미지로 자동으로 되돌립니다.
-- **대상:** AWS EC2 + RDS PostgreSQL. 순서와 비용은 [docs/05](docs/05-배포-AWS.md)에 있습니다.
+- **대상:** AWS 시드니 리전의 EC2(t3.micro, Docker) + RDS PostgreSQL 16(db.t4g.micro, 인터넷에서 접근 불가). 2026-11-13 첫 배포. 순서, 비용, 첫 배포에서 막혔던 곳은 [docs/05](docs/05-배포-AWS.md)에 있습니다.
 
 ## 아직 하지 않은 것
 
