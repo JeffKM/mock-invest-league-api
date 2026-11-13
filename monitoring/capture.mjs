@@ -4,7 +4,7 @@
 //   예) node monitoring/capture.mjs hot-x1 1794582438 1794582588
 // 결과: docs/img/<이름>-p<패널>.png. 패널 id 를 안 주면 보고서에 쓰는 기본 6개
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -18,8 +18,11 @@ const PANELS = ids.length ? ids : ['5', '4', '8', '10', '14', '6'];
 const CHROME = process.env.CHROME || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const PORT = 9333;
 const profile = mkdtempSync(join(tmpdir(), 'grafana-capture-'));
-const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', `--user-data-dir=${profile}`,
-  `--remote-debugging-port=${PORT}`, 'about:blank'], { stdio: 'ignore' });
+const chromeLog = join(profile, 'chrome.log');   // 못 뜨면 이유를 보여 주려고 남긴다
+const logFd = openSync(chromeLog, 'w');
+const chrome = spawn(CHROME, ['--headless=new', '--disable-gpu', '--hide-scrollbars', '--no-first-run',
+  '--no-default-browser-check', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT}`, 'about:blank'],
+{ stdio: ['ignore', logFd, logFd] });
 
 // 워치독: 전체가 2분을 넘기면 Chrome 을 죽이고 끝낸다(좀비 방지)
 const watchdog = setTimeout(() => { console.error('시간 초과'); cleanup(1); }, 120_000);
@@ -35,13 +38,15 @@ function cleanup(code) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function debuggerUrl() {
-  for (let i = 0; i < 50; i++) {
+  for (let i = 0; i < 150; i++) {   // 최대 30초(맥이 바쁘면 Chrome 이 늦게 뜬다)
     try {
       const res = await fetch(`http://127.0.0.1:${PORT}/json/new?about:blank`, { method: 'PUT' });
       return (await res.json()).webSocketDebuggerUrl;
     } catch { await sleep(200); }
   }
-  throw new Error('Chrome 디버깅 포트에 붙지 못했습니다');
+  let tail = '';
+  try { tail = readFileSync(chromeLog, 'utf8').split('\n').slice(-8).join('\n'); } catch { /* 없음 */ }
+  throw new Error(`Chrome 디버깅 포트에 붙지 못했습니다(30초). Chrome 로그 끝:\n${tail}`);
 }
 
 try {

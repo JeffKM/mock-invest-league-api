@@ -35,7 +35,8 @@
 | 22 | 6주차①: README 다시 쓰기, 이력서 백엔드 v3, 백엔드 포트폴리오 1쪽 | 완료 |
 | 23 | 6주차②: AWS에 실제로 올리기(시드니 EC2 + RDS), 원격 k6 러너 | 완료 |
 | 24 | 6주차③: 시나리오 목록(정상 4 + 문제 11), 그래프(Prometheus + Grafana), 불변식 검사 API, k6 HTML 리포트 | 완료 |
-| 25 | 다음 할 일(EC2에서 steady·hot 측정 → P1 원인 분석 → 해결 → 재측정) | 다음 |
+| 25 | 6주차④: EC2 측정, 한 계좌 몰림 원인 추적(CPU steal), 사용자별 주문 속도 제한, 재측정, 측정 보고서 | 완료 |
+| 26 | 다음 할 일(다음 시나리오 P3·P6 캐시 스탬피드, 이력서에 P1 사례) | 다음 |
 
 6주 전체 일정:
 
@@ -2746,13 +2747,149 @@ Grafana 에서 `hot` 구간을 보면 P1 가설과 맞는 모습이 나왔다: �
 
 ---
 
-# 25단계. 다음 할 일
+# 25단계. 6주차④: 서버에서 재고, 원인을 좁히고, 고치고, 다시 재기
 
-- **새 코드 배포.** 커밋·push → CI 이미지 → 서버 `.env`: `ACTUATOR_EXPOSE=health,info,metrics,prometheus`(시계 고정 유지) → `./deploy.sh <새 이미지>`.
-- **EC2 측정(P1 한 바퀴).** 노트북 `monitoring/up.sh <EC2 IP>` → CloudShell 에서 `steady` → `hot` → Grafana 점검표로 원인 판단(CPU 는 충분한가?) → 해결 → 같은 조건으로 재측정 → 전후 그래프.
-- **측정 전 CloudWatch `CPUCreditBalance` 확인.** 크레딧이 낮으면 CPU 가 묶여 P11 과 섞인다.
-- **이어서**: P3·P6(캐시 스탬피드) → P4·P5·P8(배치·경쟁·재전송, 정산 수동 실행 API 필요) → P2·P7·N4 → P9·P10·P11·N3.
+## 25-1. 한 일
+
+| 무엇 | 파일 | 결과 |
+|---|---|---|
+| EC2 기준선(steady) | CloudShell → EC2 | 주문 p95 23.7 ms, 조회 p95 7.4 ms, 실패 0. CPU 15% 안팎, 커넥션 대기 0 |
+| P1 `hot`(계좌 5개) | 같은 조건 | 503 0. **로컬에서 본 503 은 맥 CPU 부족 탓**이었다 |
+| P1 `hot`(한 계좌, 초당 100건) | `HOT_USERS=1` | p99 344~757 ms, 커넥션 10/10, 대기 22. CPU 12~16% |
+| 매분 튐 추적 | `deploy/psql.sh`, `deploy/sql/*.sql`, `vmstat` | 가설 4개 중 3개 기각, **하이퍼바이저 CPU steal(매분 0~2초)** 확인 |
+| 해결: 사용자별 주문 속도 제한 | `order/OrderRateLimiter` 외 2개 | 초당 5건·최대 10건, 넘으면 커넥션 잡기 전에 429 |
+| 재측정 | 같은 조건 | 대기 22 → 0, 정각 잠금 대기 9 → 0, 받아들인 주문 p99 126 ms |
+| 측정 보고서 | `docs/07-측정-보고서.md`, `monitoring/capture.mjs` | 시나리오별 그래프 캡처 + 본 것 → 판단 |
+
+## 25-2. 그래프는 "결론을 미뤄라"와 "결론을 내라"를 둘 다 말한다
+
+같은 모양의 커넥션 대기 그래프가 두 번 나왔다.
+
+| | 로컬(24단계) | EC2 한 계좌(이번) |
+|---|---|---|
+| 커넥션 대기 | 최대 104 | 최대 22 |
+| **CPU** | **100% 에 붙어 있었다(대기보다 50초 먼저)** | **12~16%** |
+| 판단 | CPU 부족 → 모두 느려짐 → 커넥션을 오래 쥠 | 잠금 줄 → 커넥션을 오래 쥠 |
+
+대기 그래프만 보면 둘은 구별되지 않는다. **CPU 그래프가 가른다.** 점검표가 "CPU 를 먼저 지운다"인 이유다.
+
+## 25-3. 매분 튐 추적: 가설을 하나씩 지웠다
+
+튐은 측정을 언제 시작했든 **실제 시계로 매분 58초~3초**에 나왔다. 늘어난 것은 "커넥션을 쥐고 있던 시간"(트랜잭션 안의 시간)이었다.
+
+| 가설 | 확인 방법 | 결과 |
+|---|---|---|
+| PostgreSQL autovacuum(로컬은 1분 주기) | `./psql.sh -f /sql/autovacuum.sql` | **기각.** RDS 는 15초 주기이고 돈 시각이 맞지 않았다 |
+| DB 가 그 순간 바빴다 | `activity.sql`: 1초마다 세션 대기 종류를 셈 | **기각.** 정각에 세션 9개가 행 잠금을 기다렸지만 디스크·내부 잠금·autovacuum·RDS 관리 접속은 0. 잠금을 쥔 쪽은 DB 안에서 아무것도 기다리지 않았다 → 앱 쪽이 멈췄다 |
+| EC2 의 1분 주기 예약 작업 | `systemctl list-timers`, `journalctl` | **기각.** `refresh-policy-routes` 가 1분 주기였지만 17:13:33, 17:15:06 에 돌았다 |
+| 하이퍼바이저가 CPU 를 가져간다 | `vmstat -t 1` 의 `st` 열 | **확인.** 매분 0~2초에만 부하 중 16~22%, 쉴 때 1~4%. 그 밖은 0 |
+
+```sql
+-- deploy/sql/activity.sql (요약): 1초마다 "누가 무엇을 기다리나"를 한 줄로
+select to_char(now() at time zone 'Asia/Seoul', 'HH24:MI:SS') as 시각,
+       count(*) filter (where wait_event_type = 'Lock') as 잠금, ...
+from pg_stat_activity where backend_type in ('client backend', 'autovacuum worker')
+\watch i=1 c=150
+```
+
+- **왜 `psql.sh`로 감쌌나**: RDS 는 인터넷에서 접근할 수 없다(23단계). 같은 VPC 의 EC2 에서 붙어야 한다. `.env`를 컨테이너 환경 변수로만 넘겨 비밀번호가 화면·셸 기록에 남지 않게 했다.
+- **왜 로컬 결과로 끝내지 않았나**: 로컬 DB 는 autovacuum 이 정확히 매분 돌아 그럴듯했다. 운영 DB 는 설정이 달랐다(`autovacuum_naptime` 15s). 운영 값은 운영에서 확인한다.
+- **"Client:ClientRead"가 뜻하는 것**: DB 가 클라이언트의 다음 SQL 을 기다리는 상태다. 잠금을 쥔 트랜잭션이 이 상태라면, 늦은 쪽은 DB 가 아니라 앱(또는 앱과 DB 사이)이다.
+
+## 25-4. 해결: 멈춤은 못 막으니 번짐을 끊는다
+
+CPU 를 잠깐 빼앗기는 일은 우리 코드 밖이다. 더 비싼 인스턴스로 가도 GC·네트워크처럼 짧은 멈춤은 생긴다.
+문제는 그 멈춤이 **한 계좌 잠금 줄을 따라 커넥션 9개로 번진다**는 점이다. 줄이 길어질 수 없게 했다.
+
+```java
+// order/OrderRateLimiter: 사용자마다 통에 토큰 최대 burst 개, 초당 perSecond 개씩 다시 찬다
+synchronized boolean tryTake(long now, double perSecond, double burst) {
+  tokens = Math.min(burst, tokens + (now - last) / 1e9 * perSecond);  // 지난 시간만큼 채우되 burst 를 넘지 않게
+  last = now;
+  if (tokens < 1) {
+    return false;          // 통이 비었다 → 거절
+  }
+  tokens -= 1;
+  return true;
+}
+```
+
+```java
+// order/OrderRateLimitInterceptor: 컨트롤러·트랜잭션보다 먼저 돈다
+public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler) {
+  if (!"POST".equals(request.getMethod())) return true;     // 주문 접수만. 조회·취소는 막지 않는다
+  Long userId = parse(request.getHeader(USER_HEADER));
+  if (userId == null || limiter.tryAcquire(userId)) return true;  // 헤더가 없으면 컨트롤러가 400 으로 답한다
+  rejected.increment();                                    // orders.rate_limited 지표
+  throw new BusinessException(ErrorCode.RATE_LIMITED);     // 429 + Retry-After: 1
+}
+```
+
+- **왜 인터셉터인가**: 서비스 안에서 거절하면 이미 트랜잭션이 열려 커넥션을 쥔 뒤다. 인터셉터는 그 전에 돈다. 거절된 요청은 1~2 ms 만에 돌아갔다.
+- **왜 사용자별 `synchronized`인가**: 통 하나를 같은 사용자의 동시 요청끼리만 다툰다. 사용자 전체에 잠금 하나를 쓰면 속도 제한이 새 병목이 된다.
+- **왜 토큰 버킷인가**: "1초에 5건"을 고정 창으로 세면 0.99초와 1.01초에 5건씩, 순간 10건이 통과한다. 토큰 버킷은 순간 허용량(burst)과 평균 속도를 따로 정한다. 연타·재전송 몇 건은 burst 로 받아 준다.
+- **오래 쉰 사용자 기록 지우기**: 1만 번 호출마다 60초 넘게 주문이 없던 사용자를 지운다. 안 지우면 사용자 수만큼 메모리가 계속 는다.
+- **왜 기본값이 꺼짐인가**: 운영(`application-prod.yml`)에서만 켠다. 동시성 테스트는 한 사용자로 주문을 한꺼번에 보내 잠금을 시험하므로, 켜 두면 그 테스트가 잠금이 아니라 속도 제한을 시험하게 된다.
+- **고르지 않은 것**: 잠금 대기 시간 제한(`lock_timeout`)은 줄이 생긴 뒤에 끊는다. 앱 안에서 계좌별로 줄 세우기는 서버 한 대에서만 맞다. Kafka 같은 큐는 응답 방식(202 접수)부터 바뀌고 t3.micro 메모리(1GB)로는 띄울 수 없다.
+- **한 번에 하나만 바꿨다**: 둘을 같이 넣으면 재측정에서 무엇이 효과를 냈는지 가를 수 없다.
+- **한계**: 기록이 서버 메모리에 있다. 서버가 여러 대면 각자 세므로 한도가 대수만큼 커진다. 그때는 Redis 같은 공용 저장소로 옮긴다.
+
+## 25-5. 재측정
+
+| | 고치기 전 | 고친 뒤 |
+|---|---|---|
+| 커넥션 대기 최대 | 22 ~ 30 | **0** |
+| 정각의 잠금 대기 세션 | 9 | **0** |
+| 받아들인 주문 p99 | 344 ~ 757 ms (거절 포함) | **126 ms** (서버 측정) |
+| 429 | - | 약 95% |
+| steady: 429 · 실패 | - | 0 · 0 |
+| 불변식 위반 · 같은 키 중복 | 0 · 0 | 0 · 0 |
+
+- **남은 것**: 매분 정각에 트랜잭션 하나하나가 늦어지는 일(커넥션 쥔 시간 p99 240~335 ms)은 그대로다. 줄이 없으니 번지지 않을 뿐이다.
+- **steady 의 p99 가 91 → 192 ms 로 나빠진 것**: 50 ms 를 넘은 곳은 03:30:00, 03:30:05, 03:31:00, 모두 정각이다. 속도 제한은 한 번도 거절하지 않았다. 그 순간 빼앗긴 CPU 양이 실행마다 달라서로 본다. 모든 요청의 p99 를 100 ms 아래로 묶어야 한다면 CPU 를 나눠 쓰지 않는 인스턴스(m·c 계열)의 비용과 비교해 정한다. 목표(p95 300 ms)는 넉넉히 만족한다.
+
+## 25-6. 측정 보고서와 캡처
+
+- `docs/07-측정-보고서.md`: 패널 사전(그래프마다 무엇을 보나), 시나리오별 그래프 + 본 것 → 판단, 질문과 답, 매분 튐 추적, 재측정. PDF 로도 만든다.
+- `node monitoring/capture.mjs <이름> <시작초> <끝초> [패널 id]`: 헤드리스 Chrome 을 직접 조종해(Node 기본 WebSocket, 설치할 것 없음) 그래프가 다 그려질 때까지 기다린 뒤 PNG 로 찍는다. `chrome --screenshot`은 "Loading" 화면을 찍어 버렸다.
+- 끝나면 Chrome 도우미 프로세스까지 이번 실행 전용 프로필 경로로 찾아 죽인다. 본체만 죽였더니 렌더러가 남았다.
+- Chrome 이 업데이트를 받은 뒤 재시작 전에는 디버깅 포트를 열지 않았다. 못 뜨면 30초 기다린 뒤 Chrome 로그 끝을 보여 주게 했다.
+- 지연 패널에서는 측정 준비 요청(가입·참가·관리자 API)을 뺐다. 맨 앞에 큰 막대로 섞여 주문 API 선을 가렸다.
+
+## 결과
+
+- EC2 기준선, P1 원인 확정(잠금 줄 + 매분 CPU steal), 사용자별 속도 제한, 재측정(대기 22 → 0)
+- 테스트 8개 추가(토큰 버킷 6, HTTP 2). 진단 도구 `deploy/psql.sh` + SQL 2개
+- 측정 보고서 `docs/07` (PDF)
+
+## 외울 것
+
+- **Q. 커넥션 풀 대기가 쌓였다. 풀을 늘리면 되나?**
+  → 먼저 "얻는 시간"과 "쥐고 있던 시간"을 나눠 본다. 쥔 시간이 길어진 것이 먼저라면 트랜잭션 안에서 무언가를 기다리는 것이다(이번에는 한 계좌 잠금 줄). 풀을 늘리면 줄에 설 자리만 늘어난다.
+- **Q. 같은 대기 그래프가 두 번 나왔는데 원인이 달랐다. 무엇으로 갈랐나?**
+  → CPU. 로컬은 CPU 100% 가 먼저였고(모두 느려짐), EC2 는 CPU 12~16% 였다(잠금 줄).
+- **Q. `vmstat`의 `st`는 무엇인가?**
+  → steal. 가상 서버가 CPU 를 쓰려 했는데 하이퍼바이저가 그 시간을 다른 데 준 비율. t3 같은 버스트형은 CPU 를 다른 서버와 나눠 쓴다.
+- **Q. `pg_stat_activity`에서 잠금을 기다리는 세션이 많은데 잠금을 쥔 세션은 `Client:ClientRead`였다. 무슨 뜻인가?**
+  → DB 는 다음 SQL 을 기다리고 있었다. 늦은 쪽은 DB 가 아니라 앱(또는 네트워크)이다.
+- **Q. 속도 제한을 왜 서비스가 아니라 인터셉터에 넣었나?**
+  → 서비스 메서드는 트랜잭션 안이라 이미 커넥션을 쥐고 있다. 인터셉터는 그 전에 돌아, 거절된 요청이 커넥션을 쓰지 않는다.
+- **Q. 고정 창 대신 토큰 버킷을 쓴 이유는?**
+  → 고정 창은 창 경계 양쪽에서 한도의 두 배가 순간 통과한다. 토큰 버킷은 순간 허용량과 평균 속도를 따로 정한다.
+- **Q. 서버가 두 대가 되면 이 속도 제한은?**
+  → 각자 메모리에서 세므로 한도가 두 배가 된다. Redis 같은 공용 저장소에서 세야 한다.
+- **Q. Kafka 를 쓰지 않은 이유는?**
+  → 응답이 "접수(202)"로 바뀌어 멱등성·앱·테스트가 모두 바뀐다. t3.micro 메모리로는 띄울 수 없다. 측정으로 병목이 "사람이 낼 수 없는 속도"에서만 생긴다는 것을 확인했으므로, 속도 제한으로 충분했다.
+- **Q. 고친 뒤 steady 의 p99 가 나빠졌다. 속도 제한 탓인가?**
+  → 거절이 0건이었고, 튄 시각이 모두 매분 정각(CPU steal 자리)이었다. 실행마다 빼앗긴 양이 다른 것으로 본다. 확인한 근거와 확인하지 못한 부분을 나눠 말한다.
+
+---
+
+# 26단계. 다음 할 일
+
+- **다음 시나리오**: P3 `tick`·P6 `snapshot-load`(캐시 스탬피드) → P4·P5·P8(정산 배치·취소 경쟁·재전송, 정산 수동 실행 API 필요) → P2·P7·N4 → P9·P10·P11·N3.
 - **측정이 끝나면** 서버 `.env`의 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 줄을 지우고 다시 배포.
+- **이력서·포트폴리오**: P1 사례(현상 → 분석 → 해결 → 재측정)를 수치와 함께 넣는다.
 - **직접 할 일(이어서).** Swagger 확인, 1·2주차 "왜" 노트, docs/01 6절 결정 확인, 프로젝트가 끝나면 저장소 공개.
 
 ---
@@ -2780,6 +2917,10 @@ monitoring/up.sh local                       # 그래프(Prometheus + Grafana) �
 SCENARIO=hot scripts/load-test.sh 1 2m      # 시나리오 하나(steady|journey|hot|rush|tick). 결과 폴더에 report.html
 curl -H "X-Admin-Token: $ADMIN_TOKEN" <서버>/api/admin/contests/<id>/invariants   # 불변식 검사
 monitoring/down.sh                          # 그래프 끄기(데이터는 30일 남음)
+node monitoring/capture.mjs <이름> <시작초> <끝초> [패널]   # Grafana 패널 → docs/img/*.png
+./psql.sh -f /sql/autovacuum.sql            # (서버 /opt/league) RDS autovacuum 기록
+./psql.sh -tA -F ' ' -f /sql/activity.sql   # (서버) 1초마다 DB 세션 대기 종류, 150초
+vmstat -t 1 100                             # (서버) 1초마다 CPU·스왑·steal(st)
 ./gradlew bootJar && scripts/cache-bench.sh 10000 20   # 캐시 비교(없음·서버 메모리·Redis). 결과 build/bench/summary.txt
 CACHE_TYPE=redis REDIS_HEALTH=true ./gradlew bootRun  # Redis 캐시로 띄우기
 grep -h '\[성능\]' build/test-results/test/*QueryPerformance*.xml  # 성능 수치만 보기
@@ -2871,3 +3012,11 @@ open build/reports/jacoco/test/html/index.html  # 커버리지
 | 캐시 스탬피드 | 캐시가 한꺼번에 비면서 그 순간 모든 요청이 DB 로 몰리는 현상 |
 | 장애 주입 | 일부러 DB 재부팅 같은 장애를 일으켜 복구 동작을 확인하는 시험 |
 | SIGHUP | 프로세스에 "설정을 다시 읽어라"로 흔히 쓰는 신호. 처리기가 없으면 기본 동작은 종료다 |
+| steal(`st`) | 가상 서버가 CPU 를 쓰려 했는데 하이퍼바이저가 그 시간을 다른 데 준 비율 |
+| 버스트형 인스턴스 | t3 처럼 평소 기본 성능만 보장하고 CPU 를 다른 서버와 나눠 쓰는 저가 인스턴스 |
+| 토큰 버킷 | 통에 토큰이 일정 속도로 차고, 요청 하나가 토큰 하나를 쓰는 속도 제한 방식 |
+| 429 Too Many Requests | 요청이 너무 잦다는 HTTP 상태. `Retry-After` 로 언제 다시 보낼지 알린다 |
+| 인터셉터 | Spring MVC 에서 컨트롤러 앞뒤에 끼어드는 코드. 트랜잭션보다 먼저 돈다 |
+| `pg_stat_activity` | PostgreSQL 의 현재 세션 목록. 무엇을 기다리는지(wait_event)가 보인다 |
+| autovacuum | PostgreSQL 이 바뀌거나 지운 행의 흔적을 주기적으로 치우는 작업 |
+| `vmstat` | 1초 단위로 CPU·메모리·스왑·디스크 상태를 찍는 리눅스 명령 |
