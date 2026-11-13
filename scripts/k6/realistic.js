@@ -31,10 +31,11 @@ const sec = (n) => `${Math.max(1, Math.round(n * SCALE))}s`;
 const ms = (n) => n + RTT_MS;
 
 // 409(현금·수량 부족, 취소 불가 등)는 업무상 거절이라 "서버 실패"로 세지 않는다. 503 은 실패로 센다(사용자는 못 쓴 것)
-http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409));
+// 429(사용자별 주문 속도 제한, 6주차③)도 의도한 거절이다. 사람 속도를 넘는 주문을 커넥션을 잡기 전에 돌려보낸 것
+http.setResponseCallback(http.expectedStatuses({ min: 200, max: 299 }, 409, 429));
 const serverErrors = new Counter('server_errors_not_503');   // 500 등. 0 이어야 한다
 const shed = new Counter('shed_503');                          // 과부하로 덜어낸 요청
-const rejects = new Counter('business_rejects');               // 409 등, error.code 태그
+const rejects = new Counter('business_rejects');               // 409·429 등, error.code 태그
 const idemMismatch = new Counter('idempotency_mismatch');      // 같은 키인데 다른 주문 id. 0 이어야 한다
 
 const SCENARIOS = {
@@ -125,7 +126,7 @@ const ROWS = {
 const NOOP = new Set(['max>=0', 'rate>=0', 'count>=0']);
 // 거절 사유별 개수도 따로 보이게
 for (const code of ['INSUFFICIENT_CASH', 'INSUFFICIENT_QUANTITY', 'ORDER_NOT_CANCELABLE', 'DATA_CONFLICT',
-  'IDEMPOTENCY_KEY_REUSED', 'NOT_FOUND', 'MARKET_CLOSED']) {
+  'IDEMPOTENCY_KEY_REUSED', 'NOT_FOUND', 'MARKET_CLOSED', 'RATE_LIMITED']) {
   options.thresholds[`business_rejects{code:${code}}`] = ['count>=0'];
 }
 options.thresholds['server_errors_not_503{code:INTERNAL_ERROR}'] = ['count>=0'];

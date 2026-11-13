@@ -22,6 +22,12 @@ server:
 league:
   admin:
     token: ${ADMIN_TOKEN}          # /api/admin/** 에 X-Admin-Token 헤더로 보낸다
+  order:
+    # 6주차③ 사용자별 주문 속도 제한. 사람은 초당 몇 건 이상 누를 수 없다. 넘는 요청은 DB 커넥션을 잡기 전에 429 로 돌려보낸다
+    # (한 계좌로 몰린 주문이 잠금 앞에 줄을 서며 커넥션 풀을 다 쥐는 문제, docs/07). 0 이면 끈다
+    rate-limit:
+      per-second: ${ORDER_RATE_LIMIT:5}
+      burst: ${ORDER_RATE_BURST:10}  # 연타·재전송처럼 순간 몰리는 몇 건은 받아 준다
 
 management:
   endpoints:

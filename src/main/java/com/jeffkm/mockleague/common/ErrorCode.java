@@ -20,6 +20,7 @@ public enum ErrorCode {
   ORDER_NOT_CANCELABLE(HttpStatus.CONFLICT, "취소할 수 없는 주문입니다."), // I10
   PRICE_NOT_READY(HttpStatus.SERVICE_UNAVAILABLE, "가격이 아직 준비되지 않았습니다. 잠시 후 다시 시도해 주세요."), // F4
   ADMIN_UNAUTHORIZED(HttpStatus.UNAUTHORIZED, "관리자 토큰이 없거나 틀렸습니다."), // 5주차② 배포
+  RATE_LIMITED(HttpStatus.TOO_MANY_REQUESTS, "주문을 너무 빠르게 보내고 있습니다. 잠시 후 다시 시도해 주세요."), // 6주차③ 속도 제한
   SERVER_BUSY(HttpStatus.SERVICE_UNAVAILABLE, "요청이 몰려 잠시 처리하지 못했습니다. 잠시 후 다시 시도해 주세요."), // 5주차② k6
   INTERNAL_ERROR(HttpStatus.INTERNAL_SERVER_ERROR, "서버 오류가 발생했습니다.");
 
