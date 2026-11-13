@@ -38,6 +38,9 @@ spring:
 
 server:
   port: 8080
+  tomcat:
+    mbeanregistry:
+      enabled: true   # 톰캣 작업 스레드 수(tomcat.threads.busy)를 지표로 낸다. 요청이 스레드를 다 쓰고 있는지 보려고(6주차③)
 
 management:
   health:
@@ -46,7 +49,14 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics
+        include: health,info,metrics,prometheus
+  metrics:
+    distribution:
+      # 응답 시간을 구간별 개수(히스토그램)로도 낸다. 그래야 Prometheus 가 p95·p99 를 "시간 구간마다" 계산할 수 있다(6주차③)
+      percentiles-histogram:
+        http.server.requests: true
+        hikaricp.connections.acquire: true
+        hikaricp.connections.usage: true
 
 logging:
   # 예외 로그의 스택 줄마다 붙던 "~[spring-core-6.2.12.jar:6.2.12]"(jar 이름·버전)를 뺀다. Spring Boot 기본(%wEx)은 이를 구하려고

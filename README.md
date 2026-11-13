@@ -132,6 +132,7 @@ docker compose up -d          # 로컬 PostgreSQL(5433)
 - [가상 상장사](docs/02-가상-상장사.md)
 - [ERD·모듈 경계](docs/03-ERD.md)
 - [배포: AWS EC2 + RDS](docs/05-배포-AWS.md)
+- [부하 시나리오와 관측(Grafana, 불변식 검사)](docs/06-부하-시나리오와-관측.md)
 - [로드맵: 단계별 결정과 실험 기록](ROADMAP.md)
 
 ## 기술

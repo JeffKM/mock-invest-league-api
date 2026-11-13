@@ -160,13 +160,28 @@ scripts/load-test-remote.sh http://<EC2 IP> 1 2m laptop      # 가정의 1배, 2
 scripts/load-test-remote.sh http://<EC2 IP> 2 2m laptop      # 2배
 ```
 
-CloudShell 준비(한 번): 저장소가 비공개라 `git clone` 대신 파일 두 개를 올린다(CloudShell 오른쪽 위 **작업 → 파일 업로드**).
+CloudShell 준비(한 번): 저장소가 비공개라 `git clone` 대신 파일 네 개를 올린다(CloudShell 오른쪽 위 **작업 → 파일 업로드**): `scripts/k6/league.js`, `scripts/k6/lib.js`, `scripts/k6/realistic.js`, `scripts/load-test-remote.sh`.
 
 ```bash
-mkdir -p league/scripts/k6 && mv league.js league/scripts/k6/ && mv load-test-remote.sh league/scripts/ && chmod +x league/scripts/*.sh
+mkdir -p league/scripts/k6 && mv league.js lib.js realistic.js league/scripts/k6/ && mv load-test-remote.sh league/scripts/ && chmod +x league/scripts/*.sh
 curl -fsSLO https://github.com/grafana/k6/releases/download/v2.3.0/k6-v2.3.0-linux-amd64.tar.gz
 tar xzf k6-v2.3.0-linux-amd64.tar.gz && mkdir -p ~/.local/bin && mv k6-v2.3.0-linux-amd64/k6 ~/.local/bin/
 cd league && scripts/load-test-remote.sh http://<EC2 IP> 1 2m cloudshell
+```
+
+**시나리오.** 기본(`SCENARIO` 없음)은 `league.js`의 일정한 속도다. 실제 사람의 패턴은 `realistic.js`에 네 개가 있다.
+
+| `SCENARIO=` | 흉내 내는 것 | 통과 기준 |
+|---|---|---|
+| `rush` | 09:00 장 시작 몰림: 평소 30초 → 4배 30초 → 평소 40초 | 500 류 0, **몰림 뒤(after)** p95 < 300ms·실패 < 1% |
+| `tick` | 5분마다 새 틱에 계좌·순위 확인: 10초 4배 + 50초 절반, 3번 | 500 류 0, 폭주 p95 < 500ms, 한산 p95 < 200ms |
+| `hot` | 같은 계좌 연타·재전송: 계좌 5개, 15% 동시 두 번, 15% 늦은 재전송 | 500 류 0, **같은 키 → 같은 주문 id**, 주문 p95 < 300ms |
+| `journey` | 한 사람의 접속: 계좌 → 공시 → 매수 → 주문 확인 → 지정가 취소 또는 매도 → 순위(생각하는 시간 포함) | 500 류 0, 주문 p95 < 300ms, 조회 p95 < 200ms |
+
+지연 기준에는 러너가 잰 왕복 시간을 더한다. 409(현금·수량 부족 같은 업무상 거절)는 실패로 세지 않고 사유별로 따로 센다. 503은 실패로 센다.
+
+```bash
+SCENARIO=journey scripts/load-test-remote.sh http://<EC2 IP> 1 2m cloudshell
 ```
 
 러너가 하는 일:

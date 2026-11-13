@@ -24,6 +24,8 @@ dependencies {
     implementation 'org.springframework.boot:spring-boot-starter-data-jpa'
     implementation 'org.springframework.boot:spring-boot-starter-validation'
     implementation 'org.springframework.boot:spring-boot-starter-actuator'
+    // 6주차③ 지표를 Prometheus 형식(/actuator/prometheus)으로도 내보낸다. Grafana 가 이것을 그래프로 그린다
+    runtimeOnly 'io.micrometer:micrometer-registry-prometheus'
     implementation 'org.springdoc:springdoc-openapi-starter-webmvc-ui:2.8.14'
 
     // 4주차② 캐시: Spring Cache 추상화 + 구현 두 개(Redis, 서버 메모리 Caffeine). 어느 것을 쓸지는 spring.cache.type

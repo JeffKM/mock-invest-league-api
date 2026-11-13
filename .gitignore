@@ -11,3 +11,6 @@ out/
 # 5주차② 배포: 서버에만 있는 값
 deploy/.deployed-image
 .gstack/
+
+# 6주차③ 지표 그래프: 대상 주소로 만들어지는 설정
+monitoring/.generated/

@@ -14,7 +14,9 @@ MEM="${MEM:-700m}"
 IMAGE="${IMAGE:-mock-invest-league-api}"
 POOL="${POOL:-10}"
 K6="${K6:-$(command -v k6 || echo "$HOME/.local/bin/k6")}"
-OUT="build/k6/x${MULT}-cpu${CPUS}-pool${POOL}${LABEL:+-$LABEL}"   # LABEL: 같은 조건에서 설정만 바꾼 실험 이름
+SCENARIO="${SCENARIO:-}"   # 비우면 league.js(예전 기준), 채우면 realistic.js 의 그 시나리오(steady|rush|tick|hot|journey)
+SCRIPT="scripts/k6/${SCENARIO:+realistic.js}"; [ -z "$SCENARIO" ] && SCRIPT=scripts/k6/league.js
+OUT="build/k6/x${MULT}-cpu${CPUS}-pool${POOL}${SCENARIO:+-$SCENARIO}${LABEL:+-$LABEL}"   # LABEL: 같은 조건에서 설정만 바꾼 실험 이름
 APP=league-load
 DB=league_load
 PORT=18081
@@ -35,7 +37,8 @@ trap cleanup EXIT
 psql -c "drop database if exists $DB" -c "create database $DB"
 TOKEN="$(openssl rand -hex 16)"
 
-# 장중 시각(12월 1일 화요일 10시)으로 시계를 고정해야 밤에도 주문이 받아진다. metrics 는 결과 수집용으로만 연다
+# 장중 시각(12월 1일 화요일 10시)으로 시계를 고정해야 밤에도 주문이 받아진다. metrics·prometheus 는 결과 수집과 그래프용으로만 연다
+# 그래프: 먼저 monitoring/up.sh local 을 띄워 두면 Grafana(localhost:3000)에 이 실행이 그려진다
 # JFR=1 이면 JDK Flight Recorder 로 CPU 를 어디에 쓰는지 기록한다(분석: jfr print --events jdk.ExecutionSample)
 JAVA_OPTS="-XX:MaxRAMPercentage=75 -Duser.timezone=Asia/Seoul"
 JAVA_OPTS="$JAVA_OPTS ${JAVA_EXTRA:-}"   # 예: JAVA_EXTRA=-XX:+UseG1GC
@@ -44,7 +47,7 @@ docker run -d --name "$APP" --cpus "$CPUS" -m "$MEM" -p "$PORT:8080" -e JAVA_TOO
   -e SPRING_PROFILES_ACTIVE=prod \
   -e DB_URL="jdbc:postgresql://host.docker.internal:5433/$DB" -e DB_USERNAME=league -e DB_PASSWORD=league \
   -e DB_POOL_SIZE="$POOL" -e ADMIN_TOKEN="$TOKEN" \
-  -e LEAGUE_CLOCK_FIXED=2026-12-01T10:00:00 -e ACTUATOR_EXPOSE=health,info,metrics \
+  -e LEAGUE_CLOCK_FIXED=2026-12-01T10:00:00 -e ACTUATOR_EXPOSE=health,info,metrics,prometheus \
   "$IMAGE" > /dev/null
 
 for _ in $(seq 1 60); do
@@ -62,13 +65,17 @@ LOAD_BEFORE="$(uptime | sed 's/.*averages*: //')"   # 이 맥의 다른 작업�
 before="$(PGDB=$DB psql -c "select xact_commit, blks_read, blks_hit from pg_stat_database where datname = '$DB'")"
 
 # k6 워치독: 정해진 시간 + 준비 10분을 넘기면 강제 종료
+# k6 HTML 리포트(report.html): 사용자 쪽에서 본 요청 수·지연·실패를 시간 순 그래프로 남긴다
+START_MS="$(date +%s)000"
 set +e
-( "$K6" run --quiet -e BASE_URL="http://localhost:$PORT" -e ADMIN_TOKEN="$TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" scripts/k6/league.js > "$OUT/k6.log" 2>&1 & pid=$!
+( K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run --quiet -e BASE_URL="http://localhost:$PORT" -e ADMIN_TOKEN="$TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
+    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e SCALE="${SCALE:-1}" \
+    "$SCRIPT" > "$OUT/k6.log" 2>&1 & pid=$!
   ( sleep 1200; kill -9 $pid 2>/dev/null ) & wd=$!
   wait $pid; code=$?; kill $wd 2>/dev/null; exit $code )
 K6_EXIT=$?
 set -e
+END_MS="$(date +%s)000"
 
 after="$(PGDB=$DB psql -c "select xact_commit, blks_read, blks_hit from pg_stat_database where datname = '$DB'")"
 metric() { curl -s "localhost:$PORT/actuator/metrics/$1" | python3 -c "import json,sys; d=json.load(sys.stdin); print(' '.join(f\"{m['statistic']}={m['value']:.4g}\" for m in d.get('measurements',[])))"; }
@@ -84,5 +91,7 @@ metric() { curl -s "localhost:$PORT/actuator/metrics/$1" | python3 -c "import js
 
 cat "$OUT/summary.md" 2>/dev/null || tail -20 "$OUT/k6.log"
 cat "$OUT/server.txt"
+echo "k6 리포트: $OUT/report.html"
+echo "Grafana(monitoring/up.sh local 을 띄웠다면): http://localhost:3000/d/league?from=$START_MS&to=$END_MS"
 echo "결과: $OUT (k6 종료 코드 $K6_EXIT: 0 이면 통과 기준을 모두 만족)"
 exit $K6_EXIT

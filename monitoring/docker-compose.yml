@@ -1,0 +1,39 @@
+# 6주차③ 지표 그래프(노트북에서만 띄운다. AWS 에는 아무것도 안 올린다 → 비용 0)
+# 띄우기: monitoring/up.sh local            (load-test.sh 가 띄운 로컬 앱, 포트 18081)
+#         monitoring/up.sh <EC2 IP>          (배포한 서버. 서버 .env 의 ACTUATOR_EXPOSE 에 prometheus 가 있어야 한다)
+# 보기:   http://localhost:3000  (대시보드 "모의투자 서버")    끄기: monitoring/down.sh
+services:
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: league-prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d   # 지난 측정의 그래프를 나중에 다시 캡처할 수 있게 30일 둔다
+    volumes:
+      - ./.generated/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"   # 노트북 밖에서는 못 들어오게 127.0.0.1 에만 연다
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  grafana:
+    image: grafana/grafana:11.3.1
+    container_name: league-grafana
+    environment:
+      # 노트북 안에서만 쓰므로 로그인 없이 연다(127.0.0.1 에만 열려 있다)
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Admin
+      GF_AUTH_DISABLE_LOGIN_FORM: "true"
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/league.json
+      GF_USERS_DEFAULT_LANGUAGE: ko-KR
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      - prometheus
+
+volumes:
+  prometheus-data:
