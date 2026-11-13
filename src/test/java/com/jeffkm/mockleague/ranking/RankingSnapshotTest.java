@@ -1,6 +1,7 @@
 package com.jeffkm.mockleague.ranking;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -73,6 +74,19 @@ class RankingSnapshotTest {
 
   int snapshots() {
     return jdbc.queryForObject("select count(*) from ranking_snapshots where contest_id = ?", Integer.class, contestId);
+  }
+
+  @Test
+  void 관리자가_지금_틱_스냅샷을_바로_찍고_같은_틱은_다시_찍지_않는다() throws Exception {
+    mvc.perform(post("/api/admin/contests/{id}/ranking-snapshots", contestId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.created").value(true));
+    mvc.perform(post("/api/admin/contests/{id}/ranking-snapshots", contestId))
+        .andExpect(jsonPath("$.data.created").value(false));
+
+    assertThat(snapshots()).isEqualTo(1);
+    api.fetch("/api/contests/{id}/rankings", contestId)
+        .andExpect(jsonPath("$.data.entries.length()").value(3));
   }
 
   @Test

@@ -1,4 +1,5 @@
 # 5주차 CI: main 에 올리거나 PR 을 열면 테스트를 돌리고, 앱 이미지가 만들어지는지 확인한다.
+# 5주차②: main 에 올렸을 때만 그 이미지를 GitHub Container Registry(ghcr.io)에 커밋 sha 태그로 올린다. EC2 는 이 태그를 받아 띄운다.
 # 테스트는 Testcontainers 로 PostgreSQL·Redis 를 띄운다(GitHub 의 ubuntu 러너에는 Docker 가 있다).
 name: CI
 
@@ -11,6 +12,9 @@ jobs:
   test-and-build:
     runs-on: ubuntu-latest
     timeout-minutes: 40   # 로컬 전체 테스트가 10~20분. 멈추면 40분에 끊는다
+    permissions:
+      contents: read
+      packages: write     # ghcr.io 에 이미지를 올릴 권한(이 저장소의 GITHUB_TOKEN 으로)
     steps:
       - uses: actions/checkout@v4
 
@@ -37,4 +41,19 @@ jobs:
         run: ./gradlew bootJar --no-daemon
 
       - name: 앱 이미지 빌드 확인
-        run: docker build -t mock-invest-league-api:${{ github.sha }} .
+        # source 라벨: ghcr.io 의 이미지가 이 저장소와 연결된다
+        run: >
+          docker build -t mock-invest-league-api:${{ github.sha }}
+          --label org.opencontainers.image.source=https://github.com/${{ github.repository }} .
+
+      - name: 이미지 올리기(main 에 올렸을 때만)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"   # 레지스트리 경로는 소문자만 된다(JeffKM → jeffkm)
+          echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+          # latest 는 쓰지 않는다. 커밋 sha 태그만 올려 "지금 서버에 뜬 코드"와 "되돌릴 곳"을 정확히 가리킨다
+          docker tag mock-invest-league-api:${{ github.sha }} "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:${{ github.sha }}"
+          echo "올린 이미지: $IMAGE:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

@@ -2,11 +2,15 @@ package com.jeffkm.mockleague.common;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.core.NestedRuntimeException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
+import org.springframework.jdbc.CannotGetJdbcConnectionException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingRequestHeaderException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
@@ -54,6 +58,19 @@ public class GlobalExceptionHandler {
   @ExceptionHandler(OptimisticLockingFailureException.class)
   public ResponseEntity<ApiResponse<Void>> handleOptimisticLock(OptimisticLockingFailureException e) {
     return respond(ErrorCode.DATA_CONFLICT, ErrorCode.DATA_CONFLICT.defaultMessage());
+  }
+
+  /**
+   * DB 커넥션을 제한 시간(운영 3초) 안에 못 얻었다 = 서버가 지금 감당할 수 있는 양을 넘었다(5주차② k6 에서 발견).
+   * 500 + 스택 트레이스로 남기면 로그 쓰기 자체가 CPU 를 먹어 더 느려지는 악순환이 생긴다.
+   * 503 + Retry-After 로 "잠시 뒤 다시"를 알리고, 로그는 한 줄만 남긴다.
+   */
+  @ExceptionHandler({CannotCreateTransactionException.class, CannotGetJdbcConnectionException.class})
+  public ResponseEntity<ApiResponse<Void>> handleBusy(NestedRuntimeException e) {
+    log.warn("DB 커넥션 부족으로 503: {}", e.getMostSpecificCause().getMessage());
+    return ResponseEntity.status(ErrorCode.SERVER_BUSY.status())
+        .header(HttpHeaders.RETRY_AFTER, "1")
+        .body(ApiResponse.fail(ErrorCode.SERVER_BUSY, ErrorCode.SERVER_BUSY.defaultMessage()));
   }
 
   @ExceptionHandler(Exception.class)

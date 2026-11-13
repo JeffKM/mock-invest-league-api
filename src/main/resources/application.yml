@@ -49,5 +49,8 @@ management:
         include: health,info,metrics
 
 logging:
+  # 예외 로그의 스택 줄마다 붙던 "~[spring-core-6.2.12.jar:6.2.12]"(jar 이름·버전)를 뺀다. Spring Boot 기본(%wEx)은 이를 구하려고
+  # 줄마다 클래스를 찾는데, 그 과정이 전역 잠금을 잡아 과부하 때 스레드가 줄줄이 멈췄다(5주차② k6, ROADMAP 21단계)
+  exception-conversion-word: "%ex"
   level:
     org.hibernate.SQL: debug   # 실행 SQL 확인(N+1 실험용). 부하 테스트 때는 끈다

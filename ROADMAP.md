@@ -31,7 +31,8 @@
 | 18 | 4주차①: 조회 성능(EXPLAIN, LATERAL, 인덱스 순서, 배치 INSERT) | 완료 |
 | 19 | 4주차②: 조회 캐시(없음·서버 메모리·Redis 비교, 기본값 서버 메모리) | 완료 |
 | 20 | 5주차①: 순위 스냅샷 정리, Docker 이미지, CI | 완료 |
-| 21 | 다음 할 일(5주차②: 배포, k6 부하 테스트) | 다음 |
+| 21 | 5주차②: 배포 준비(EC2 + RDS, 운영 설정, 배포 스크립트), k6 부하 테스트 | 완료(서버 만들기는 직접) |
+| 22 | 다음 할 일(AWS에 올리기, EC2에서 k6, 6주차) | 다음 |
 
 6주 전체 일정:
 
@@ -2203,7 +2204,7 @@ Failing row contains (1, 12월 리그, SCHEDULED, 2026-12-01, 2026-12-31, 18:00:
 
 - 새 테스트 2개(정리 배치). 전체 148개 통과(성능 실험 4개는 건너뜀). 테스트 JVM을 UTC로 바꾼 뒤에도 모두 통과.
 - 앱 이미지 빌드·실행·스모크 테스트 통과.
-- CI 첫 실행은 실패했다(20-5). 고친 뒤 다시 올려 확인한다.
+- CI 첫 실행은 실패했다(20-5). 고친 커밋(`2212ef8`)은 CI를 통과했다.
 
 ## 외울 것
 
@@ -2226,12 +2227,257 @@ Failing row contains (1, 12월 리그, SCHEDULED, 2026-12-01, 2026-12-31, 18:00:
 
 ---
 
-# 21단계. 다음 할 일
+# 21단계. 5주차②: 배포 준비(AWS EC2 + RDS)와 k6 부하 테스트
 
-- **CI 다시 확인.** 시간대 버그를 고친 커밋이 CI에서 통과하는지 본다.
-- **5주차②: 배포.** 정할 것: 어디에 올릴지(클라우드 VM, 컨테이너 서비스 등), 이미지 레지스트리(GitHub Container Registry 등), DB를 어디에 둘지, 비용. 계정·결제가 필요한 일이라 직접 정한다.
-- **5주차②: k6 부하 테스트.** docs/01 5절 가정(주문 30 TPS, 조회 90 TPS)의 2~3배. 19단계에서 본 것처럼 부하 발생기는 앱과 다른 기계에서 돌린다.
-- **직접 할 일.**
+## 한 일
+
+1. **배포할 곳을 정했다.** AWS EC2(앱 한 대) + RDS(PostgreSQL). 이미지는 GitHub Container Registry(ghcr.io)에 올린다. 계정·결제가 필요한 서버 만들기는 직접 하고, 그 전까지 할 수 있는 것을 모두 준비했다(순서는 [docs/05](docs/05-배포-AWS.md)).
+2. **운영 설정(`prod` 프로필).** DB 주소·비밀번호·관리자 토큰을 환경 변수로만 받는다. 빠뜨리면 앱이 뜨지 않는다.
+3. **관리자 API 보호.** `/api/admin/**`는 `X-Admin-Token` 헤더가 맞아야 통과한다.
+4. **배포 스크립트.** 새 이미지를 띄우고 헬스 체크를 기다린다. 실패하면 직전 이미지로 자동으로 되돌린다. 로컬에서 세 가지 경우로 리허설했다.
+5. **CI가 이미지를 올린다.** main에 올라온 커밋마다 `ghcr.io/jeffkm/mock-invest-league-api:<커밋 sha>`로 올린다.
+6. **k6 부하 테스트.** 앱을 운영 설정 그대로, CPU 2개·메모리 700MB(t3.micro와 비슷하게)로 묶어서 쳤다. **과부하 때 서버가 스스로 무너지는 문제**를 찾아 고쳤다.
+7. **순위 스냅샷을 바로 찍는 관리자 API.** 부하 테스트가 빈 순위표가 아니라 실제 1,000줄을 읽게 하려고 만들었다. 운영 점검에도 쓴다.
+
+| 만든 것 | 파일 |
+|---|---|
+| 운영 설정 | `src/main/resources/application-prod.yml` |
+| 관리자 토큰 검사 | `common/AdminTokenInterceptor`, `common/WebConfig`, `ErrorCode.ADMIN_UNAUTHORIZED` |
+| 커넥션 부족 → 503 | `GlobalExceptionHandler.handleBusy`, `ErrorCode.SERVER_BUSY` |
+| 예외 로그 형식 | `application.yml`의 `logging.exception-conversion-word` |
+| 수동 순위 스냅샷 | `POST /api/admin/contests/{id}/ranking-snapshots`(`ContestLifecycleService.snapshotNow`) |
+| 운영 compose·환경 변수 예시 | `deploy/docker-compose.yml`, `deploy/.env.example` |
+| EC2 첫 설정 | `deploy/ec2-setup.sh` |
+| 배포·되돌리기 | `deploy/deploy.sh` |
+| 이미지 올리기 | `.github/workflows/ci.yml`(main일 때만) |
+| 부하 테스트 | `scripts/k6/league.js`, `scripts/load-test.sh` |
+| 배포 순서 문서 | `docs/05-배포-AWS.md` |
+| 테스트 | `AdminTokenTest`(4), `GlobalExceptionHandlerTest`(2), `RankingSnapshotTest`(+1) |
+
+## 21-1. 어디에, 왜: EC2 + RDS, 이미지는 ghcr.io
+
+| 고른 것 | 다른 후보 | 고른 이유 |
+|---|---|---|
+| EC2 한 대에 Docker | ECS·Fargate, PaaS(Fly.io, Render) | 구성이 단순하고, 서버·네트워크·보안 그룹을 직접 다뤄 본다. 면접에서 자주 묻는 구성이다 |
+| RDS(PostgreSQL 16) | EC2에 Postgres 같이 띄우기 | 백업·패치·복구를 AWS가 맡는다. 앱 서버가 죽어도 데이터는 따로 있다 |
+| 캐시는 서버 메모리 그대로 | ElastiCache(Redis) | 서버가 한 대라 필요 없다(19단계). 비용도 아낀다 |
+| ghcr.io | ECR | CI에 AWS 키를 넣지 않아도 된다. 저장소의 `GITHUB_TOKEN`만으로 올린다 |
+| t3.micro(x86) | t4g.micro(ARM, 더 쌈) | CI가 x86 이미지를 만든다. ARM으로 가려면 다중 아키텍처 빌드가 필요하다 |
+
+비용은 정가로 24시간 켜 두면 한 달 약 $30~37이지만, **무료 플랜 크레딧(최대 $200, 6개월)에서 빠지므로 실제로 내는 돈은 0원이다.** 무료 플랜은 유료로 바꾸지 않는 한 청구하지 않고, 크레딧이나 기간이 끝나면 계정을 닫는다(docs/05 2절). 크레딧을 오래 쓰려고 데모할 때만 켠다.
+
+## 21-2. 운영 설정: 빠뜨리면 뜨지 않게
+
+```yaml
+# application-prod.yml (SPRING_PROFILES_ACTIVE=prod)
+spring.datasource:
+  url: ${DB_URL}              # 기본값 없음
+  password: ${DB_PASSWORD}    # 기본값 없음
+  hikari.connection-timeout: 3000
+server.shutdown: graceful
+league.admin.token: ${ADMIN_TOKEN}
+management.endpoints.web.exposure.include: ${ACTUATOR_EXPOSE:health,info}
+logging.level.org.hibernate.SQL: info
+```
+
+- **기본값 없는 `${...}`.** 기본 설정에는 로컬 도커용 비밀번호(`league`)가 있다. 운영에서 환경 변수를 빠뜨렸을 때 그 값으로 조용히 떠서 엉뚱한 DB에 붙는 것보다, **아예 안 뜨는 편이 안전하다.** 리허설에서 `ADMIN_TOKEN`을 빼고 띄우자 `Could not resolve placeholder 'ADMIN_TOKEN'`으로 멈췄다.
+- **커넥션 대기 3초.** 기본값 30초면 DB가 바쁠 때 요청이 30초씩 매달린다. 빨리 실패시키고 503으로 알린다(21-6).
+- **graceful shutdown.** 배포로 컨테이너를 내릴 때 새 요청은 막고, 처리 중인 주문은 끝낸 뒤 내려간다(최대 20초). compose의 `stop_grace_period: 30s`는 그보다 길게 잡았다.
+- **metrics는 밖에 열지 않는다.** 지표에는 내부 정보(쿼리 수, 메모리)가 있다. 부하 테스트 때만 환경 변수로 잠깐 연다.
+- **SQL 로그 끄기.** 기본 설정은 N+1 실험용으로 SQL을 모두 찍는다(debug). 요청마다 디스크에 쓰므로 운영에서는 끈다.
+
+## 21-3. 관리자 API 보호: 토큰 하나, 상수 시간 비교
+
+인터넷에 올리면 누구나 `/api/admin/contests`로 대회를 만들고 시작할 수 있다. 로그인 기능을 만들기 전에, 관리자 경로만 토큰으로 막았다.
+
+```java
+// AdminTokenInterceptor
+String given = request.getHeader("X-Admin-Token");
+if (given == null || !MessageDigest.isEqual(expected, given.getBytes(UTF_8))) {
+  throw new BusinessException(ErrorCode.ADMIN_UNAUTHORIZED);   // → 401, ApiResponse 형식
+}
+```
+
+- **경로 하나로 건다.** 1주차에 관리자 API를 `/api/admin`으로 따로 둔 덕에 `addPathPatterns("/api/admin/**")` 한 줄이면 된다.
+- **`MessageDigest.isEqual`.** `String.equals`는 앞에서부터 비교하다 다른 글자에서 멈춘다. 응답 시간 차이로 토큰을 한 글자씩 알아낼 여지가 생긴다(타이밍 공격). `isEqual`은 길이가 같으면 끝까지 비교한다.
+- **로컬에서는 끈다.** 토큰을 비워 두면 검사하지 않고 경고만 남긴다. Swagger로 바로 눌러 보던 개발 흐름을 바꾸지 않으려고.
+- **인터셉터에서 던진 예외도** `@RestControllerAdvice`가 받는다. 그래서 401도 다른 오류와 같은 `ApiResponse` 형식이다.
+
+테스트: 토큰 없음 401, 한 글자 틀림 401, 맞으면 201, 관리자 경로가 아니면 검사 안 함.
+
+## 21-4. 배포 스크립트: 띄우고, 확인하고, 안 되면 되돌린다
+
+```bash
+./deploy.sh ghcr.io/jeffkm/mock-invest-league-api:<sha>
+# 1) 이미지 먼저 받기(실패하면 지금 앱은 그대로) 2) 컨테이너 교체 3) healthy 될 때까지 최대 180초
+# 4) 성공 → .deployed-image 에 기록  5) 실패 → 로그 50줄, 직전 이미지로 되돌림
+```
+
+- **`latest`를 쓰지 않는다.** `latest`는 "지금 서버에 뜬 게 어느 커밋인가"에 답하지 못하고, 되돌릴 곳도 가리키지 못한다. 커밋 sha 태그는 둘 다 정확하다.
+- **헬스 체크가 판정한다.** 컨테이너가 "떠 있다"와 "요청을 받을 수 있다"는 다르다. Dockerfile의 `HEALTHCHECK`(`/actuator/health`가 UP인지)를 Docker가 기록하고, 스크립트는 그 상태만 본다.
+- **처음 배포가 실패하면 앱을 멈춘다.** `restart: unless-stopped` 때문에 설정이 틀린 앱이 죽었다 살아나기를 끝없이 반복했다(리허설에서 발견). 되돌릴 곳이 없으면 멈추게 고쳤다.
+
+**로컬 리허설**(실제 RDS 대신 로컬 Postgres의 임시 DB):
+
+| 경우 | 결과 |
+|---|---|
+| `ADMIN_TOKEN` 빠뜨림 | 앱이 뜨지 않음 → 스크립트 실패(종료 코드 1) |
+| 정상 | 78초 만에 healthy. 헬스 UP, metrics 404(닫힘), 토큰 없이 관리자 API 401, 토큰 있으면 201, SQL 로그 0줄 |
+| 깨진 이미지(헬스 체크에 응답하지 않음) | 60초 뒤 실패 판정 → 직전 이미지로 되돌림 → healthy |
+
+**되돌리기의 한계: DB 마이그레이션.** 이미지는 되돌려도 Flyway가 바꾼 스키마는 되돌아가지 않는다. 그래서 마이그레이션은 **예전 코드도 견디게** 만든다. 컬럼 추가는 괜찮다(예전 코드는 모르는 컬럼을 무시한다). 컬럼 삭제·이름 바꾸기는 "새 컬럼 추가 → 코드 전환 배포 → 예전 컬럼 삭제"처럼 두 번에 나눈다.
+
+## 21-5. CI가 이미지를 올린다
+
+```yaml
+permissions: { contents: read, packages: write }
+- name: 이미지 올리기(main 에 올렸을 때만)
+  if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+  run: |
+    IMAGE="ghcr.io/${GITHUB_REPOSITORY,,}"     # JeffKM → jeffkm(레지스트리 경로는 소문자만)
+    echo "$GHCR_TOKEN" | docker login ghcr.io -u "${{ github.actor }}" --password-stdin
+    docker push "$IMAGE:${{ github.sha }}"
+```
+
+- **PR에서는 올리지 않는다.** 테스트와 이미지 빌드까지만 한다. 리뷰 전 코드가 레지스트리에 쌓이지 않게.
+- **권한은 필요한 만큼만.** `packages: write` 하나. 키를 따로 만들지 않고 실행마다 발급되는 `GITHUB_TOKEN`을 쓴다.
+- 저장소가 비공개라 이미지도 비공개다. 서버는 `read:packages` 권한만 있는 토큰으로 로그인해서 받는다.
+- 서버에 자동으로 배포하는 것(CD)은 아직 하지 않았다. CI가 서버에 들어갈 권한(SSH 키·SSM)을 갖게 되는 것이라, 서버를 만든 뒤 따로 정한다.
+
+## 21-6. k6: 무엇을, 어떻게 쳤나
+
+```
+워밍업 30초(목표의 절반 속도) → 측정 2분
+주문: 시장가 매수 80%, 체결 안 될 낮은 지정가 매수 20%
+조회: 내 계좌 40%, 내 주문 30%, 순위표 20%, 공시 10%
+통과 기준: 실패율 1% 미만, p95 주문 300ms·조회 200ms 미만
+```
+
+- **`constant-arrival-rate`.** 초당 N건을 정해진 시각에 보낸다. 사용자 수(VU)를 고정하고 "응답이 오면 다음 요청"을 보내면, 서버가 느려질수록 요청을 덜 보내서 실제보다 좋아 보인다(coordinated omission). 실제 사용자는 서버 사정을 봐주지 않는다.
+- **준비(setup).** 대회 하나, 사용자 1,000명 참가, 순위 스냅샷 한 장. 50건씩 동시에 보낸다(`http.batch`).
+- **시계 고정.** 운영 설정 그대로 띄우되 `LEAGUE_CLOCK_FIXED=2026-12-01T10:00:00`(화요일 장중)을 줬다. 밤에도 주문이 받아진다.
+- **앱 컨테이너는 CPU 2개, 메모리 700MB.** t3.micro(2 vCPU, 1GB)와 비슷하게. DB는 묶지 않았다(RDS는 따로 있으므로).
+- **같이 적은 것.** 5초마다 앱·DB 컨테이너 CPU, DB 트랜잭션 수, 커넥션 대기, GC 멈춤, 그리고 **이 맥의 load average**(21-8).
+- **k6 설치.** Intel 맥이라 Homebrew에 미리 빌드된 k6가 없어 소스 빌드가 8분 넘게 걸렸다. 공식 릴리스 zip(v2.3.0)을 받아 체크섬을 확인하고 `~/.local/bin/k6`에 두었다.
+
+## 21-7. 찾은 문제: 과부하가 오류 로그를 부르고, 오류 로그가 과부하를 키운다
+
+처음 돌린 결과(가정의 1배 = 초당 120건)는 무너졌다. **실패 64%, p95 55초.**
+
+**JFR(JDK Flight Recorder)로 본 것:**
+
+```
+스레드가 잠금을 기다린 시간 합계: 1,086초 (측정 3분 남짓 동안)
+그중 1,003초: logback PackagingDataCalculator → 클래스 로더 잠금
+CPU 표본이 가장 많이 잡힌 앱 코드: GlobalExceptionHandler.handleUnexpected
+```
+
+**고리:**
+
+1. 요청이 몰려 DB 커넥션(10개)이 잠깐 모자란다.
+2. 3초 기다린 요청이 `CannotCreateTransactionException`으로 실패한다.
+3. 이 예외가 "처리되지 않은 예외"로 500 + **스택 트레이스**로 로그에 찍힌다.
+4. Spring Boot 기본 로그 형식(`%wEx`)은 스택 줄마다 `~[spring-core-6.2.12.jar:6.2.12]`처럼 jar 이름·버전을 붙인다. 이걸 구하려고 줄마다 클래스를 찾는데, **클래스 로더의 전역 잠금**을 잡는다.
+5. 수백 개 스레드가 그 잠금 앞에 줄을 선다. 그동안 잡고 있던 DB 커넥션도 늦게 돌려준다 → 1로 돌아간다.
+
+**고친 것 두 가지:**
+
+```java
+// 1) 커넥션을 못 얻으면 503 + Retry-After, 로그는 한 줄
+@ExceptionHandler({CannotCreateTransactionException.class, CannotGetJdbcConnectionException.class})
+public ResponseEntity<ApiResponse<Void>> handleBusy(NestedRuntimeException e) {
+  log.warn("DB 커넥션 부족으로 503: {}", e.getMostSpecificCause().getMessage());
+  return ResponseEntity.status(503).header(RETRY_AFTER, "1").body(...SERVER_BUSY...);
+}
+```
+
+```yaml
+# 2) 예외 로그에서 jar 정보 계산을 뺀다(모든 프로필)
+logging.exception-conversion-word: "%ex"
+```
+
+- **500이 아니라 503인 이유.** 500은 "서버 버그", 503은 "지금 바쁘니 잠시 뒤 다시"다. 클라이언트·로드 밸런서가 다르게 다룬다(503은 재시도, 500은 알림). 커넥션 부족은 버그가 아니라 용량 문제다.
+- **스택 트레이스를 안 남기는 이유.** 원인이 이미 분명하다(풀 고갈). 한 줄이면 충분하고, 과부하 상황에서 로그 비용을 키우지 않는다.
+
+**효과(이 맥의 부하와 상관없는 지표로):**
+
+| | 고치기 전 | 고친 뒤 |
+|---|---|---|
+| 잠금 대기 합계(JFR) | 1,086초 | 5.1초 |
+| 그중 jar 정보 계산 | 1,003초 | 0초 |
+| 실패 응답 | 500 + 스택 트레이스 | 전부 503, 스택 트레이스 0줄 |
+
+## 21-8. 측정 결과와, 측정이 틀릴 뻔한 이야기
+
+모두 앱 CPU 2개·메모리 700MB·커넥션 10개, 측정 2분(워밍업 30초 뒤).
+
+| 실행 | 목표(초당) | 주문 p95 | 조회 p95 | 실패율 | 이 맥의 load average |
+|---|---|---|---|---|---|
+| 고치기 전, 1배 | 120 | 55,035ms | 54,177ms | 64% | (기록 전) |
+| 고친 뒤, 1배 | 120 | 14,655ms | 14,261ms | 26% | 끝날 때 31 |
+| 고친 뒤, 0.5배 | 60 | 832ms | 474ms | 0% | 약 20 |
+| 0.5배, GC를 G1로 | 60 | 89ms | 30ms | 0% | 8.7 |
+| 0.5배, GC 원래대로(SerialGC) | 60 | **63ms** | **19ms** | 0% | 7 |
+| 1배 | 120 | 3,054ms | 3,024ms | 4.7%(전부 503) | 14 → 18 |
+| 1배, **CPU 4개**·메모리 1.4GB | 120 | 335ms | **172ms** | **0%** | 12 |
+
+**틀릴 뻔한 것.** 0.5배에서 p95가 832ms였고 GC 멈춤이 최대 1.2초였다. 컨테이너 메모리가 1.8GB보다 작으면 JVM이 SerialGC를 고르기 때문에(`-XX:+PrintFlagsFinal`로 확인), "GC를 G1으로 바꾸면 된다"고 보고 바꿨더니 89ms로 좋아졌다. 그런데 **SerialGC로 한 번 더 돌리자 63ms로 더 좋았다.** 그사이 이 맥의 load average가 20에서 7로 내려가 있었다. 좋아진 것은 GC가 아니라 **맥이 한가해진 것**이었다. 이 맥은 Unity 에디터 같은 다른 작업도 돌고 있다. 그래서:
+
+- 설정을 바꾸면 **원래 설정으로 한 번 더**(A → B → A) 돌려 확인한다.
+- 러너가 실행 전후 load average를 결과에 같이 적게 했다.
+- 수정 효과는 맥 부하와 상관없는 지표(JFR 잠금 대기, 500 개수)로 확인했다(21-7).
+
+**읽은 것:**
+
+- 이 맥에서 CPU 2개짜리 앱은 **초당 약 60건은 여유, 100건 근처에서 포화**다. CPU가 2코어 한도에 붙어 있었고 DB CPU는 여유가 있었다. 요청 하나에 CPU 약 20ms를 쓴다(1.4GHz 노트북, 다른 작업과 나눠 씀).
+- CPU를 두 배로 주니 1배(초당 120건)를 실패 없이 받았다. 병목이 앱 CPU라는 뜻이다.
+- **가정의 2~3배(초당 240~360건)는 이 맥에서 재지 않았다.** 1배에서 이미 포화이므로 숫자가 의미 없다. 실제 EC2에서 부하 발생기를 다른 기계로 두고 다시 잰다(docs/05 9절).
+- 프로파일에서 한 군데가 튀지는 않았다. CPU는 Spring MVC·Hibernate·JSON·로그 같은 프레임워크 기본 비용에 고르게 나뉘었다. 눈에 띈 후보 하나는 Spring Data의 메서드 이름 쿼리(`findBy...`)다. Criteria로 만들어지는데, Hibernate는 Criteria의 실행 계획을 기본으로 캐시하지 않아(`hibernate.criteria.plan_cache_enabled=false`) 매번 SQL로 다시 바꾼다. 표본의 약 5%였다. 이 맥의 측정 잡음(같은 설정에서 실패율 4.7%~26%)보다 작아 효과를 잴 수 없어서 바꾸지 않았다.
+
+## 결과
+
+- 새 테스트 7개(관리자 토큰 4, 503 응답 2, 수동 스냅샷 1). 전체 155개 통과(성능 실험 4개는 건너뜀), UTC JVM, 10분 23초.
+- 배포 리허설 3가지 통과. k6로 과부하 시 무너지는 고리를 찾아 끊었다.
+- 직전 커밋(`2212ef8`, 시간대 버그 수정)이 CI를 통과한 것을 확인했다.
+- 실제 AWS 서버는 아직 없다. 만들고 올리는 순서는 docs/05.
+
+## 외울 것
+
+- **Q. 어디에 어떻게 배포하나?**
+  → EC2 한 대에 Docker로 앱을 띄우고 DB는 RDS다. CI가 main 커밋마다 이미지를 ghcr.io에 커밋 sha 태그로 올리고, 서버에서 `deploy.sh <태그>`로 바꾼다. 캐시는 서버 메모리라 Redis는 없다.
+- **Q. 배포가 실패하면?**
+  → 스크립트가 헬스 체크를 최대 180초 기다리고, healthy가 안 되면 직전 이미지로 되돌린다. 이미지를 먼저 받아 두므로 받기 실패로 서버가 멈추지도 않는다.
+- **Q. 이미지 태그를 `latest`로 안 쓰는 이유는?**
+  → 서버에 뜬 코드가 어느 커밋인지, 되돌릴 곳이 어디인지 알 수 없다. 커밋 sha는 둘 다 정확하다.
+- **Q. 되돌릴 때 DB 스키마는?**
+  → 되돌아가지 않는다. 그래서 마이그레이션은 예전 코드도 견디게 만든다. 컬럼 삭제·이름 바꾸기는 추가 → 전환 → 삭제로 나눠 배포한다.
+- **Q. 비밀값은 어떻게 다루나?**
+  → 서버의 `.env`(권한 600, git 제외)에서 환경 변수로 넣는다. 운영 설정은 기본값 없는 `${...}`라 빠뜨리면 앱이 뜨지 않는다. 다음 단계는 SSM Parameter Store 같은 비밀 저장소다.
+- **Q. 관리자 API는 어떻게 막았나?**
+  → `/api/admin/**`에 인터셉터로 `X-Admin-Token`을 검사한다. 비교는 `MessageDigest.isEqual`로 해서 응답 시간으로 토큰을 알아낼 수 없게 했다.
+- **Q. k6에서 `constant-arrival-rate`를 쓴 이유는?**
+  → 정해진 속도로 계속 보낸다. 사용자 수를 고정하면 서버가 느려질수록 요청이 줄어 결과가 실제보다 좋아 보인다(coordinated omission).
+- **Q. 부하 테스트에서 무엇을 찾았나?**
+  → 커넥션이 모자라 생긴 예외가 500 + 스택 트레이스로 찍히는데, 기본 로그 형식이 스택 줄마다 jar 정보를 구하느라 클래스 로더 잠금을 잡았다. 그 잠금 대기가 1,086초였고, 느려진 요청이 커넥션을 더 오래 잡아 악순환이 됐다. 503 + 한 줄 로그로 바꾸고 jar 정보 계산을 끄자 잠금 대기가 5초로 줄었다.
+- **Q. 과부하일 때 500 대신 503을 주는 이유는?**
+  → 버그가 아니라 용량 문제이고, 클라이언트가 다시 시도해도 되는 상황이다. `Retry-After`로 언제 다시 올지도 알린다.
+- **Q. 측정에서 조심한 것은?**
+  → 같은 기계에서 다른 작업이 결과를 흔들었다. GC를 바꿔서 좋아진 줄 알았는데, 원래 설정으로 다시 돌리니 더 좋았다. 맥이 한가해진 것이었다. 그래서 A→B→A로 확인하고, load average를 같이 적고, 수정 효과는 JFR 잠금 대기처럼 기계 부하와 무관한 지표로 본다.
+- **Q. 서버 한 대가 얼마나 받나?**
+  → 이 노트북에서 CPU 2개로는 초당 약 60건이 여유, 100건 근처에서 포화였다. CPU 4개로는 초당 120건을 실패 없이 받았다. 병목은 앱 CPU였다. 실제 EC2 수치는 배포 뒤 다른 기계에서 다시 잰다.
+- **Q. 컨테이너에서 JVM이 SerialGC를 쓴 이유는?**
+  → 메모리 1.8GB 미만(또는 CPU 1개)이면 JVM이 "서버급 기계가 아니다"라고 보고 SerialGC를 고른다. 이번 측정에서는 GC가 병목이 아니어서 바꾸지 않았다.
+- **Q. graceful shutdown은 왜?**
+  → 배포로 컨테이너를 내릴 때 처리 중인 주문이 중간에 끊기지 않게, 새 요청만 막고 진행 중인 요청은 끝낸 뒤 내려간다.
+
+---
+
+# 22단계. 다음 할 일
+
+- **AWS에 실제로 올리기(직접).** docs/05 순서: 예산 알림 → 보안 그룹 → RDS → EC2 → `.env`·토큰 → `deploy.sh`. 다음 커밋을 main에 올리면 CI가 첫 이미지를 ghcr.io에 올린다.
+- **EC2에서 k6 다시 재기.** 노트북(부하 발생기)과 EC2(앱)가 다른 기계인 첫 측정. 장 시간에, 짧게(t3 CPU 크레딧).
+- **6주차: README, 포트폴리오 문서, 이력서 반영.** 배포 URL과 k6 결과를 넣는다.
+- **직접 할 일(이어서).**
   - Swagger 확인(공시, 출석, 순위 API)
   - 1·2주차 "왜" 노트
   - docs/01 6절 결정 확인: 지정가 체결 가격은 지금 지정가로 구현돼 있다
@@ -2252,6 +2498,9 @@ TEST_TIMEOUT=1800 ./run_tests.sh           # 전체 테스트(워치독 30분. �
 ./run_tests.sh --tests '*ConcurrencyTest*' # 동시성 비교(방식 4개 × 시나리오 4개). 결과 줄은 [동시성]
 grep -h '\[동시성\]' build/test-results/test/*Concurrency*.xml  # 비교 수치만 보기
 LEAGUE_EXPERIMENT=true TEST_TIMEOUT=900 ./run_tests.sh --tests '*QueryPerformanceExperiment'  # 조회 성능 실험(약 6분)
+./scripts/load-test.sh 1 2m                 # k6 부하 테스트(가정의 1배, 2분). 결과 build/k6/x1-cpu2-pool10/
+CPUS=4 MEM=1400m ./scripts/load-test.sh 1 2m   # 앱 CPU·메모리 바꿔서
+JFR=1 ./scripts/load-test.sh 1 2m           # JFR 기록까지(app.jfr → jfr print --events jdk.ExecutionSample)
 ./gradlew bootJar && scripts/cache-bench.sh 10000 20   # 캐시 비교(없음·서버 메모리·Redis). 결과 build/bench/summary.txt
 CACHE_TYPE=redis REDIS_HEALTH=true ./gradlew bootRun  # Redis 캐시로 띄우기
 grep -h '\[성능\]' build/test-results/test/*QueryPerformance*.xml  # 성능 수치만 보기
@@ -2314,3 +2563,18 @@ open build/reports/jacoco/test/html/index.html  # 커버리지
 | compose 프로필 | `--profile`을 줄 때만 뜨는 서비스 묶음 |
 | CI | Continuous Integration. 코드를 올릴 때마다 자동으로 빌드·테스트하는 것 |
 | GitHub Actions | GitHub가 제공하는 CI. `.github/workflows/*.yml`에 단계를 적는다 |
+| 프로필(Spring) | `application-prod.yml`처럼 환경별 설정 묶음. `SPRING_PROFILES_ACTIVE`로 고른다 |
+| 컨테이너 레지스트리 | 이미지를 올려 두고 서버가 받아 가는 저장소(ghcr.io, ECR, Docker Hub) |
+| RDS | AWS가 운영해 주는 관계형 DB. 백업·패치·장애 복구를 맡는다 |
+| 보안 그룹 | AWS의 가상 방화벽. 어떤 포트를 어디서 들어오게 할지 정한다 |
+| graceful shutdown | 내려갈 때 새 요청은 막고 처리 중인 요청은 끝낸 뒤 종료하는 것 |
+| 롤백(되돌리기) | 새 버전이 문제일 때 직전 버전으로 돌아가는 것 |
+| 타이밍 공격 | 비교에 걸리는 시간 차이로 비밀값을 한 글자씩 알아내는 공격 |
+| k6 | 자바스크립트로 시나리오를 쓰는 부하 테스트 도구 |
+| p95 | 응답 시간을 줄 세웠을 때 95% 지점. "100명 중 95명은 이 시간 안에 받았다" |
+| `constant-arrival-rate` | 서버 응답과 상관없이 초당 정해진 수의 요청을 보내는 k6 방식 |
+| coordinated omission | 서버가 느려질 때 부하 발생기도 덩달아 덜 보내 결과가 좋게 나오는 측정 오류 |
+| JFR | JDK Flight Recorder. JVM에 들어 있는 프로파일러. CPU 표본, 잠금 대기, GC를 기록한다 |
+| 503 / `Retry-After` | "지금은 처리할 수 없으니 잠시 뒤 다시". `Retry-After`는 몇 초 뒤에 오라는 헤더 |
+| SerialGC / G1 | JVM의 GC 방식. 작은 컨테이너에서는 JVM이 단순한 SerialGC를 고르고, 보통은 G1을 쓴다 |
+| load average | 실행 중이거나 CPU를 기다리는 작업 수의 평균. 코어 수보다 크면 CPU가 붐빈다 |

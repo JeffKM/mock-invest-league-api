@@ -7,3 +7,7 @@ out/
 .DS_Store
 .env
 *.log
+
+# 5주차② 배포: 서버에만 있는 값
+deploy/.deployed-image
+.gstack/
