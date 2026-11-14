@@ -10,6 +10,7 @@ import java.time.Clock;
 import java.time.LocalDate;
 import java.util.List;
 import java.util.concurrent.ThreadLocalRandom;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,14 +26,17 @@ public class ContestService {
   private final CompanyRepository companyRepository;
   private final PriceGenerationService priceGenerationService;
   private final Clock clock;
+  private final JdbcTemplate jdbc;
 
   public ContestService(ContestRepository contestRepository, ContestListingRepository listingRepository,
-      CompanyRepository companyRepository, PriceGenerationService priceGenerationService, Clock clock) {
+      CompanyRepository companyRepository, PriceGenerationService priceGenerationService, Clock clock,
+      JdbcTemplate jdbc) {
     this.contestRepository = contestRepository;
     this.listingRepository = listingRepository;
     this.companyRepository = companyRepository;
     this.priceGenerationService = priceGenerationService;
     this.clock = clock;
+    this.jdbc = jdbc;
   }
 
   /** 기본 규칙으로 대회를 만들고 상장사 전체를 상장한다. 대회와 상장 목록은 한 트랜잭션: 반쪽짜리 대회가 남지 않는다. */
@@ -67,6 +71,10 @@ public class ContestService {
     LocalDate today = LocalDate.now(clock);
     LocalDate through = today.isBefore(contest.getStartsOn()) ? contest.getStartsOn() : today;
     priceGenerationService.ensureGeneratedThrough(contestId, through); // 종료일을 넘으면 안에서 잘라 낸다
+    // 6주차⑦ P6: 새 대회의 상장 24줄은 자동 ANALYZE 기준(50줄 + 10%)에 못 미쳐 통계에 없다. 그러면 플래너가 이 대회의
+    // 종목을 1개로 예상해 순위 스냅샷에서 보유 행마다 종목을 다시 훑는 중첩 루프를 고른다(10만 명에서 3.2초 → 고친 뒤 1.5초).
+    // 작은 표라 몇 ms 면 끝난다. 읽기·쓰기를 막지 않는 잠금(SHARE UPDATE EXCLUSIVE)만 잡는다.
+    jdbc.execute("analyze contest_listings");
     return ContestResponse.from(contest, listingRepository.findByIdContestId(contestId).size());
   }
 }

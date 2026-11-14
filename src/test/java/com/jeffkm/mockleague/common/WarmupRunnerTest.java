@@ -37,7 +37,7 @@ class WarmupRunnerTest {
 
     WarmupRunner.Result result = warmup.warmUp();
 
-    assertThat(result.requests()).isGreaterThan(10);
+    assertThat(result.requests()).isPositive(); // 개수는 기계 속도에 달렸다(바쁜 맥에서 1초에 4건). 보는 것은 "보냈고 모두 200"
     assertThat(result.byStatus().keySet()).containsOnly(200);
   }
 
