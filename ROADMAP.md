@@ -2930,6 +2930,8 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 - **k6 `TICK_ALIGN=0`.** 30초를 기다리지 않고 바로 폭주를 시작한다. 배포 직후 첫 몰림을 재기 위해서다.
 - **Grafana ⑤ 콜드 스타트 줄.** JIT 컴파일에 쓴 CPU(코어 수), 앱 가동 시간.
 - 테스트: `WarmupRunnerTest`(2: 진짜 포트로 보낸 조회가 모두 200, readiness 가 헬스에 들어감).
+- **EC2 측정(docs/07 9절).** 같은 이미지에서 `LEAGUE_WARMUP` 만 바꿨다. 끔(앱 시작 8분 뒤): 첫 폭주 JIT 코어 1.9, 커넥션 대기 53, 폭주 p95 282 ms·최대 1.78 s. 켬: JIT 약 1.1, 대기 0, 폭주 p95 18 ms·최대 149 ms. 실패·불변식 위반 0.
+- **새로 안 것.** 8분 놀아도 콜드였다. JVM 은 시간이 아니라 요청이 데운다. 문제는 "재시작 뒤 첫 몰림"이다.
 
 ## 왜
 
@@ -2938,6 +2940,8 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 ## 외울 것
 
 - **Q. 콜드 스타트가 느린 이유를 어떻게 확인했나?** 추측하지 않고 `jvm_compilation_time_ms_total` 의 증가 속도를 봤다. 첫 폭주 동안 초당 1.8초 → 코어 2개 중 1.8개를 컴파일러가 썼다. 커넥션 풀(이미 10개)과 클래스 로딩(+150개)은 배제했다.
+- **Q. 앱을 켜 두고 기다리면 데워지지 않나?** 아니다. 8분 놀던 JVM 도 첫 몰림에서 JIT 가 코어 1.9개를 썼다. JIT 는 많이 실행된 코드를 골라 컴파일하므로 실행이 있어야 데워진다.
+- **Q. 이번엔 왜 효과라고 말할 수 있나?** 같은 이미지·설정 한 줄만 바꿨고, 원인 지표(JIT 코어 수 1.9 → 1.1)와 결과 지표(커넥션 대기 53 → 0)가 함께 움직였다. 8절처럼 대조군(캐시와 무관한 API)까지 똑같이 움직인 경우와 다르다.
 - **Q. liveness 와 readiness 차이?** liveness: 살아 있나(죽었으면 재시작). readiness: 요청을 받아도 되나(아니면 트래픽을 보내지 않음). 데우기 중에는 살아 있지만 준비는 안 된 상태다.
 - **Q. 데우기 말고 다른 방법은?** 몰림 시각을 피해 배포. JVM 옵션(CDS 로 시작 시간 단축, 최신 JDK 의 AOT 캐시). 프로파일을 저장했다 다시 쓰는 기술(CRaC 등). 이 프로젝트는 Java 17·t3.micro 라 가장 단순한 데우기를 골랐다.
 
@@ -2945,7 +2949,8 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 # 28단계. 다음 할 일
 
-- **콜드 스타트 서버 측정.** 같은 이미지로 `LEAGUE_WARMUP=false` 배포 직후 `TICK_ALIGN=0 SCENARIO=tick` → `true` 로 배포 직후 같은 측정. 첫 폭주 p95·커넥션 대기·JIT CPU 를 비교한다.
+- **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지운다.
+- **이력서·포트폴리오.** P1(잠금 줄 → 속도 제한), P3(스탬피드는 작다고 수치로 판단), 콜드 스타트(데우기) 세 사례를 넣는다.
 
 - **콜드 스타트(새 사례).** 재배포 직후 첫 몰림이 느린 것을 데우기로 줄일 수 있는지 잰다.
 - **서버 `.env`**: `LEAGUE_CLOCK_SPEED` 는 측정 뒤 지우고 강제로 다시 띄웠다(16:28). `LEAGUE_CACHE_SINGLE_FLIGHT=true` 줄은 다음 이미지부터 기본값이 켜짐이므로 지워도 된다.
