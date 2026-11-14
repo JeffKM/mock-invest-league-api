@@ -963,6 +963,205 @@
     }
    ],
    "id": 18
+  },
+  {
+   "type": "row",
+   "title": "④ 캐시 스탬피드 (틱·스냅샷이 바뀌는 순간)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 59,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 19
+  },
+  {
+   "type": "timeseries",
+   "title": "캐시 놓침 수 (10초 합)",
+   "description": "틱 경계마다 키가 바뀌므로 캐시마다 1번만 놓치면 이상적이다. 경계 직후 10초 합이 크면 여러 요청이 동시에 놓쳐 DB 를 각자 읽은 것.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 60,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ],
+     "sortBy": "Max",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum by (cache) (increase(league_cache_total{result=\"miss\"}[10s]))",
+     "legendFormat": "{{cache}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    }
+   ],
+   "id": 20
+  },
+  {
+   "type": "timeseries",
+   "title": "같은 키를 동시에 읽은 최대 수",
+   "description": "놓친 요청이 DB 를 읽기 시작할 때 같은 키를 이미 읽고 있던 수(자기 포함)의 최대. 1 이면 스탬피드 없음. 최근 약 15초의 최대다.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 8,
+    "y": 60,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ],
+     "sortBy": "Max",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max by (cache) (league_cache_concurrent_loads_max)",
+     "legendFormat": "{{cache}}",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    }
+   ],
+   "id": 21
+  },
+  {
+   "type": "timeseries",
+   "title": "놓친 한 번의 DB 읽기 시간",
+   "description": "p95 와 최대. 이 시간이 길수록 그사이 도착한 요청이 더 많이 놓친다(동시 로드 ≈ 초당 요청 × 이 시간).",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 16,
+    "y": 60,
+    "w": 8,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ],
+     "sortBy": "Max",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "histogram_quantile(0.95, sum by (le, cache) (rate(league_cache_load_seconds_bucket[$__rate_interval])))",
+     "legendFormat": "{{cache}} p95",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    },
+    {
+     "refId": "B",
+     "expr": "max by (cache) (league_cache_load_seconds_max)",
+     "legendFormat": "{{cache}} 최대",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    }
+   ],
+   "id": 22
   }
  ],
  "editable": true

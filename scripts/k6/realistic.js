@@ -2,6 +2,8 @@
 //   steady  기준선: 평소 속도(주문 1 : 조회 3)를 일정하게. 나머지 시나리오를 이것과 비교한다
 //   rush    장 시작 몰림: 평소 → 4배로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
+//           서버를 5배속 시계(LEAGUE_CLOCK_SPEED=5)로 띄우면 틱이 실제 매분 30초에 바뀐다. 그래서 폭주를 매분 30초에
+//           맞춰 시작하고, 폭주 1초 뒤 순위 스냅샷을 찍는다(스케줄러 대신) → 가격·순위 캐시 키가 폭주 중에 바뀐다(6주차⑤)
 //   hot     같은 계좌 연타·재전송: 계좌 몇 개에 주문이 몰린다. 동시 두 번 누르기와 늦은 재전송이 같은 주문을 돌려주는지
 //   journey 사용 흐름: 계좌 → 공시 → 매수 → 주문 확인 → (지정가 걸고 취소 | 매도) → 순위, 사이사이 생각하는 시간
 // league.js(일정한 속도, 매수·조회만)는 비교 기준으로 그대로 둔다.
@@ -105,9 +107,17 @@ const THRESHOLDS = {
   },
 };
 
+// tick 은 "틱이 바뀌는 순간"을 만드는 두 번째 흐름을 함께 돌린다: 폭주가 시작되고 1초 뒤 순위 스냅샷
+const EXTRA = SCENARIO === 'tick' && ADMIN ? {
+  tickSnapshot: {
+    executor: 'constant-arrival-rate', exec: 'takeSnapshot', rate: 1, timeUnit: sec(60), duration: sec(180),
+    preAllocatedVUs: 1, maxVUs: 2,
+  },
+} : {};
+
 export const options = {
   setupTimeout: '10m',
-  scenarios: { [SCENARIO]: SCENARIOS[SCENARIO] },
+  scenarios: { [SCENARIO]: SCENARIOS[SCENARIO], ...EXTRA },
   // 모든 시나리오 공통: 500 류 0건, 끝난 뒤 불변식 검사(돈·주식이 장부와 맞는가) 위반 0건
   thresholds: { server_errors_not_503: ['count==0'], invariant_violations: ['count==0'], ...THRESHOLDS[SCENARIO] },
   summaryTrendStats: ['avg', 'med', 'p(90)', 'p(95)', 'p(99)', 'max'],
@@ -137,7 +147,22 @@ for (const tag of ROWS[SCENARIO]) {
 }
 
 export function setup() {
-  return prepare({ base: BASE, admin: ADMIN, users: USERS, startsOn: STARTS_ON, endsOn: ENDS_ON });
+  const data = prepare({ base: BASE, admin: ADMIN, users: USERS, startsOn: STARTS_ON, endsOn: ENDS_ON });
+  if (SCENARIO === 'tick') {
+    // 매분 30초(5배속 서버의 틱 경계)까지 기다렸다가 시작한다. 0초 무렵 CPU steal 과 겹치지 않게 반 분 비켰다
+    const wait = (90_000 - (Date.now() % 60_000)) % 60_000;
+    console.log(`틱 경계(매분 30초)에 맞추려고 ${(wait / 1000).toFixed(1)}초 기다린다`);
+    sleep(wait / 1000);
+  }
+  return data;
+}
+
+/** tick: 스케줄러가 할 일(새 틱의 순위 스냅샷)을 폭주 1초 뒤에 한다. 서버 시계가 고정이면 같은 틱이라 새로 찍히지 않는다. */
+export function takeSnapshot(data) {
+  sleep(1);
+  const res = http.post(`${BASE}/api/admin/contests/${data.contestId}/ranking-snapshots`, null,
+    { headers: { 'X-Admin-Token': ADMIN }, tags: { kind: 'admin', name: 'POST ranking-snapshots' } });
+  console.log(`순위 스냅샷: ${res.status} 새로 찍음=${res.status === 200 ? res.json('data.created') : '-'}`);
 }
 
 /** 시나리오 시작 뒤 몇 초째인지(SCALE 을 되돌려 원래 시간축으로). 구간 태그를 붙이는 데 쓴다. */

@@ -2,7 +2,7 @@
 # 5주차② k6 부하 테스트 러너. 앱을 운영 설정(prod) 그대로, CPU·메모리를 t3.micro 와 비슷하게 묶은 컨테이너로 띄우고 k6 로 친다.
 # 사용: ./scripts/load-test.sh [배수=3] [시간=2m]     예) ./scripts/load-test.sh 1 1m
 # 전제: docker compose up -d postgres, ./gradlew bootJar && docker build -t mock-invest-league-api ., k6 설치
-# 환경 변수: CPUS(기본 2) MEM(기본 700m) IMAGE(기본 mock-invest-league-api) USERS(기본 1000) POOL(기본 10)
+# 환경 변수: CLOCK_SPEED(기본 0=시계 고정, 5=5배속. tick 시나리오에서 틱이 실제로 바뀌게) CPUS(기본 2) MEM(기본 700m) IMAGE(기본 mock-invest-league-api) USERS(기본 1000) POOL(기본 10)
 #           JAVA_EXTRA(JVM 옵션 추가) LABEL(결과 폴더 이름 꼬리) JFR=1(프로파일 기록)
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -47,7 +47,8 @@ docker run -d --name "$APP" --cpus "$CPUS" -m "$MEM" -p "$PORT:8080" -e JAVA_TOO
   -e SPRING_PROFILES_ACTIVE=prod \
   -e DB_URL="jdbc:postgresql://host.docker.internal:5433/$DB" -e DB_USERNAME=league -e DB_PASSWORD=league \
   -e DB_POOL_SIZE="$POOL" -e ADMIN_TOKEN="$TOKEN" \
-  -e LEAGUE_CLOCK_FIXED=2026-12-01T10:00:00 -e ACTUATOR_EXPOSE=health,info,metrics,prometheus \
+  -e LEAGUE_CLOCK_FIXED=2026-12-01T10:00:00 -e LEAGUE_CLOCK_SPEED="${CLOCK_SPEED:-0}" \
+  -e ACTUATOR_EXPOSE=health,info,metrics,prometheus \
   "$IMAGE" > /dev/null
 
 for _ in $(seq 1 60); do
@@ -86,6 +87,8 @@ metric() { curl -s "localhost:$PORT/actuator/metrics/$1" | python3 -c "import js
   echo "커넥션 사용 시간(hikaricp.connections.usage): $(metric hikaricp.connections.usage)"
   echo "GC 멈춤(jvm.gc.pause): $(metric jvm.gc.pause)"
   echo "캐시(cache.gets): $(metric cache.gets)"
+  echo "캐시 놓침 → DB 읽기 시간(league.cache.load): $(metric league.cache.load)"
+  echo "같은 키 동시 로드(league.cache.concurrent_loads): $(metric league.cache.concurrent_loads)"
   echo "앱 CPU 최대: $(grep ",$APP," "$OUT/stats.csv" | cut -d, -f3 | tr -d % | sort -n | tail -1)%  DB CPU 최대: $(grep ',league-postgres,' "$OUT/stats.csv" | cut -d, -f3 | tr -d % | sort -n | tail -1)%"
 } > "$OUT/server.txt"
 
