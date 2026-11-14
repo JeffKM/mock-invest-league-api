@@ -58,11 +58,6 @@ management:
         hikaricp.connections.acquire: true
         hikaricp.connections.usage: true
         league.cache.load: true   # 6주차⑤ 캐시를 놓쳤을 때 DB 에서 읽는 시간
-      # 최댓값(_max)을 기억하는 시간. 기본(2분)이면 60초마다 오는 틱 경계 두 번이 한 값에 섞인다
-      expiry:
-        league.cache: 15s
-      buffer-length:
-        league.cache: 3
 
 logging:
   # 예외 로그의 스택 줄마다 붙던 "~[spring-core-6.2.12.jar:6.2.12]"(jar 이름·버전)를 뺀다. Spring Boot 기본(%wEx)은 이를 구하려고

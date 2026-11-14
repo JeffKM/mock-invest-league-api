@@ -980,7 +980,7 @@
   {
    "type": "timeseries",
    "title": "캐시 놓침 수 (10초 합)",
-   "description": "틱 경계마다 키가 바뀌므로 캐시마다 1번만 놓치면 이상적이다. 경계 직후 10초 합이 크면 여러 요청이 동시에 놓쳐 DB 를 각자 읽은 것.",
+   "description": "틱 경계 직후에 솟으면 키가 바뀌어 놓친 것. increase 는 수집 간격(5초)으로 늘려 잡은 추정치라 실제 개수의 약 2배로 보일 수 있다. 정확한 개수는 오른쪽 패널.",
    "datasource": {
     "type": "prometheus",
     "uid": "prom"
@@ -1038,8 +1038,8 @@
   },
   {
    "type": "timeseries",
-   "title": "같은 키를 동시에 읽은 최대 수",
-   "description": "놓친 요청이 DB 를 읽기 시작할 때 같은 키를 이미 읽고 있던 수(자기 포함)의 최대. 1 이면 스탬피드 없음. 최근 약 15초의 최대다.",
+   "title": "최근 1분 동안 DB 를 읽은 수 · 기다려 받은 수",
+   "description": "miss = 실제로 DB 를 읽은 수, coalesced = single-flight 로 앞사람 결과를 받은 수. 틱이 1분마다 바뀌면(5배속) miss 가 캐시마다 1 이면 이상적이다. 정확한 개수를 보려고 rate·increase(추정치) 대신 1분 전 값과의 차이를 쓴다.",
    "datasource": {
     "type": "prometheus",
     "uid": "prom"
@@ -1085,8 +1085,8 @@
    "targets": [
     {
      "refId": "A",
-     "expr": "max by (cache) (league_cache_concurrent_loads_max)",
-     "legendFormat": "{{cache}}",
+     "expr": "sum by (cache, result) (league_cache_total{result=~\"miss|coalesced\"}) - sum by (cache, result) (league_cache_total{result=~\"miss|coalesced\"} offset 1m)",
+     "legendFormat": "{{cache}} {{result}}",
      "datasource": {
       "type": "prometheus",
       "uid": "prom"
