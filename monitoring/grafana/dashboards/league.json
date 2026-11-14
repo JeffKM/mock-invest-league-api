@@ -1162,6 +1162,137 @@
     }
    ],
    "id": 22
+  },
+  {
+   "type": "row",
+   "title": "⑤ 콜드 스타트 (배포 직후)",
+   "collapsed": false,
+   "gridPos": {
+    "x": 0,
+    "y": 68,
+    "w": 24,
+    "h": 1
+   },
+   "panels": [],
+   "id": 23
+  },
+  {
+   "type": "timeseries",
+   "title": "JIT 컴파일에 쓴 CPU (코어 수)",
+   "description": "1초 동안 JIT 컴파일러가 쓴 시간(초) = 컴파일에 쓰는 코어 수. t3.micro 는 코어 2개라 2 에 가까우면 요청 처리에 쓸 CPU 가 거의 없다. 막 뜬 JVM 에서 크고, 데워지면 0 근처로 내려간다.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 0,
+    "y": 69,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "short",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ],
+     "sortBy": "Max",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "sum(rate(jvm_compilation_time_ms_total[$__rate_interval])) / 1000",
+     "legendFormat": "JIT 컴파일",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    }
+   ],
+   "id": 24
+  },
+  {
+   "type": "timeseries",
+   "title": "앱이 뜬 지 몇 초",
+   "description": "재배포·재시작 시점을 찾는 데 쓴다. 0 으로 떨어진 순간이 새로 뜬 때다.",
+   "datasource": {
+    "type": "prometheus",
+    "uid": "prom"
+   },
+   "gridPos": {
+    "x": 12,
+    "y": 69,
+    "w": 12,
+    "h": 8
+   },
+   "fieldConfig": {
+    "defaults": {
+     "unit": "s",
+     "min": 0,
+     "custom": {
+      "lineWidth": 2,
+      "fillOpacity": 10,
+      "stacking": {
+       "mode": "none"
+      },
+      "showPoints": "never",
+      "spanNulls": true
+     }
+    },
+    "overrides": []
+   },
+   "options": {
+    "legend": {
+     "displayMode": "table",
+     "placement": "bottom",
+     "calcs": [
+      "max",
+      "mean"
+     ],
+     "sortBy": "Max",
+     "sortDesc": true
+    },
+    "tooltip": {
+     "mode": "multi",
+     "sort": "desc"
+    }
+   },
+   "targets": [
+    {
+     "refId": "A",
+     "expr": "max(process_uptime_seconds)",
+     "legendFormat": "가동 시간",
+     "datasource": {
+      "type": "prometheus",
+      "uid": "prom"
+     }
+    }
+   ],
+   "id": 25
   }
  ],
  "editable": true

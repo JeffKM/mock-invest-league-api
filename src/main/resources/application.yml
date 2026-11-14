@@ -43,6 +43,10 @@ server:
       enabled: true   # 톰캣 작업 스레드 수(tomcat.threads.busy)를 지표로 낸다. 요청이 스레드를 다 쓰고 있는지 보려고(6주차③)
 
 management:
+  endpoint:
+    health:
+      probes:
+        enabled: true   # 6주차⑥ readiness 를 /actuator/health 에 넣는다. 데우기(WarmupRunner)가 끝나기 전엔 OUT_OF_SERVICE
   health:
     redis:
       enabled: ${REDIS_HEALTH:false}   # 캐시를 Redis 로 쓸 때만 켠다. 안 쓰는데 켜 두면 Redis 가 없다고 DOWN 이 된다

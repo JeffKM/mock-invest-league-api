@@ -11,7 +11,8 @@ STATE_FILE=.deployed-image                # 마지막으로 성공한 이미지(
 PREV_IMAGE="$(cat "$STATE_FILE" 2>/dev/null || true)"
 
 up() {
-  IMAGE="$1" docker compose up -d --remove-orphans
+  # --force-recreate: 같은 이미지라도 다시 띄운다. .env 에서 줄을 지웠을 때 compose 가 바뀐 줄 모르고 그대로 둔 일이 있었다(26단계)
+  IMAGE="$1" docker compose up -d --remove-orphans --force-recreate
 }
 
 wait_healthy() {

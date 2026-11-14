@@ -32,6 +32,10 @@ league:
     # 6주차⑤ 틱이 바뀌는 순간 같은 키를 동시에 놓친 요청 중 한 명만 DB 를 읽는다(docs/07 8절).
     # 1,000명 규모에서는 틱마다 1~2번 → 1번으로 줄었고 지연 손해는 없었다. 참가자가 늘면 동시에 놓치는 수도 커지므로 켜 둔다
     single-flight: ${LEAGUE_CACHE_SINGLE_FLIGHT:true}
+  warmup:
+    # 6주차⑥ 사용자 요청을 받기 전에 자기 자신에게 조회 요청을 보내 JIT 를 미리 돌린다(콜드 스타트). 끝나야 헬스 체크가 UP 이 된다
+    enabled: ${LEAGUE_WARMUP:true}
+    duration: ${LEAGUE_WARMUP_DURATION:20s}
 
 management:
   endpoints:

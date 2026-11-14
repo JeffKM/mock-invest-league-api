@@ -4,6 +4,7 @@
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
 //           서버를 5배속 시계(LEAGUE_CLOCK_SPEED=5)로 띄우면 틱이 실제 매분 30초에 바뀐다. 그래서 폭주를 매분 30초에
 //           맞춰 시작하고, 폭주 1초 뒤 순위 스냅샷을 찍는다(스케줄러 대신) → 가격·순위 캐시 키가 폭주 중에 바뀐다(6주차⑤)
+//           TICK_ALIGN=0 이면 기다리지 않고 바로 시작한다(배포 직후 첫 몰림을 재는 콜드 스타트 측정용, 6주차⑥)
 //   hot     같은 계좌 연타·재전송: 계좌 몇 개에 주문이 몰린다. 동시 두 번 누르기와 늦은 재전송이 같은 주문을 돌려주는지
 //   journey 사용 흐름: 계좌 → 공시 → 매수 → 주문 확인 → (지정가 걸고 취소 | 매도) → 순위, 사이사이 생각하는 시간
 // league.js(일정한 속도, 매수·조회만)는 비교 기준으로 그대로 둔다.
@@ -148,7 +149,7 @@ for (const tag of ROWS[SCENARIO]) {
 
 export function setup() {
   const data = prepare({ base: BASE, admin: ADMIN, users: USERS, startsOn: STARTS_ON, endsOn: ENDS_ON });
-  if (SCENARIO === 'tick') {
+  if (SCENARIO === 'tick' && __ENV.TICK_ALIGN !== '0') {
     // 매분 30초(5배속 서버의 틱 경계)까지 기다렸다가 시작한다. 0초 무렵 CPU steal 과 겹치지 않게 반 분 비켰다
     const wait = (90_000 - (Date.now() % 60_000)) % 60_000;
     console.log(`틱 경계(매분 30초)에 맞추려고 ${(wait / 1000).toFixed(1)}초 기다린다`);
