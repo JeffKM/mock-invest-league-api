@@ -45,20 +45,6 @@ public class RankingRepository {
   }
 
   /**
-   * 6주차⑦ P6: 이 트랜잭션에서만 스냅샷용 설정을 준다(set_config(..., true) = SET LOCAL, 끝나면 원래대로).
-   * <ul>
-   *   <li>work_mem: 10만 명의 정렬·해시가 기본 4MB 를 넘쳐 임시 파일을 쓰고, 그 디스크를 다른 쿼리와 나눠 쓴다.
-   *       서버 전체로 올리면 연결마다 그만큼 쓸 수 있어 위험하지만, 5분에 한 번 도는 이 트랜잭션 하나에만 준다.</li>
-   *   <li>synchronous_commit = off: 이 커밋은 WAL 이 디스크에 내려가기를 기다리지 않는다. 장애 직전 몇백 ms 안의
-   *       스냅샷 하나를 잃을 수 있지만, 스냅샷은 다음 틱에 다시 계산되는 파생 데이터다. 돈이 오가는 커밋에는 쓰지 않는다.</li>
-   * </ul>
-   */
-  public void tuneSnapshotTransaction(String workMem) {
-    jdbc.queryForObject("select set_config('work_mem', ?, true)", String.class, workMem);
-    jdbc.queryForObject("select set_config('synchronous_commit', 'off', true)", String.class);
-  }
-
-  /**
    * 그 시점 총자산(F12) = 현금 + 묶인 현금 + Σ(보유 수량 × at 시점 가격)을 계산해 순위와 함께 넣는다.
    * <ul>
    *   <li>보유 수량(quantity)은 지정가 매도로 묶인 수량을 포함한다. 묶여도 아직 내 주식이다.</li>

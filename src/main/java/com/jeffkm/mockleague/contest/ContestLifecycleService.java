@@ -92,19 +92,14 @@ public class ContestLifecycleService {
   /**
    * 관리자가 지금 틱 기준 스냅샷을 바로 찍는다(5주차② 부하 테스트·운영 점검용). 스케줄러와 같은 코드를 탄다.
    * 같은 틱을 이미 찍었거나 아직 보이는 틱이 없으면 false.
-   *
-   * @param tuning null 이면 설정대로. true/false 면 이번 한 장만 스냅샷 트랜잭션 설정을 켜고 끈다(6주차⑦ P6 전후 비교용)
    */
-  public boolean snapshotNow(Long contestId, LocalDateTime now, Boolean tuning) {
+  public boolean snapshotNow(Long contestId, LocalDateTime now) {
     Contest c = contestRepository.findById(contestId)
         .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "대회를 찾을 수 없습니다."));
     if (c.getStatus() != ContestStatus.RUNNING) {
       throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
     }
-    return c.latestVisibleTick(now)
-        .map(at -> tuning == null ? rankingService.takeSnapshot(c.getId(), at)
-            : rankingService.takeSnapshot(c.getId(), at, tuning))
-        .orElse(false);
+    return c.latestVisibleTick(now).map(at -> rankingService.takeSnapshot(c.getId(), at)).orElse(false);
   }
 
   private void snapshot(Contest c, LocalDateTime now) {

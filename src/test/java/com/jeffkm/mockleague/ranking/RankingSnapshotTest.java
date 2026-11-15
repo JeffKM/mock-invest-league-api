@@ -28,8 +28,6 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
-import org.springframework.transaction.PlatformTransactionManager;
-import org.springframework.transaction.support.TransactionTemplate;
 
 /**
  * 순위 스냅샷(F12) 통합 테스트.
@@ -52,8 +50,6 @@ class RankingSnapshotTest {
   @Autowired CompanyRepository companyRepository;
   @Autowired PriceTickRepository priceTickRepository;
   @Autowired JdbcTemplate jdbc;
-  @Autowired RankingRepository rankingRepository;
-  @Autowired PlatformTransactionManager txManager;
 
   ApiFixture api;
   long contestId;
@@ -262,43 +258,5 @@ class RankingSnapshotTest {
     lifecycleService.runDaily(DEC1.plusDays(1)); // 12/1 종가(77틱) 스냅샷 → 12/1 장중 두 장 삭제
 
     assertThat(snapshotTicks()).containsExactly("2026-12-01:77");
-  }
-
-  @Test
-  void 스냅샷_트랜잭션_설정은_그_트랜잭션_안에서만_쓰인다() {
-    // 6주차⑦ P6: work_mem·synchronous_commit 을 서버 전체가 아니라 스냅샷 트랜잭션에만 준다
-    List<String> inside = new TransactionTemplate(txManager).execute(tx -> {
-      rankingRepository.tuneSnapshotTransaction("32MB");
-      return List.of(jdbc.queryForObject("select current_setting('work_mem')", String.class),
-          jdbc.queryForObject("select current_setting('synchronous_commit')", String.class));
-    });
-    List<String> after = new TransactionTemplate(txManager).execute(tx ->
-        List.of(jdbc.queryForObject("select current_setting('work_mem')", String.class),
-            jdbc.queryForObject("select current_setting('synchronous_commit')", String.class)));
-
-    assertThat(inside).containsExactly("32MB", "off");
-    assertThat(after).doesNotContain("32MB", "off");
-  }
-
-  @Test
-  void 설정을_켜고_찍어도_끄고_찍은_것과_순위가_같다() throws Exception {
-    mvc.perform(post("/api/admin/contests/{id}/ranking-snapshots", contestId).param("tuning", "false"))
-        .andExpect(jsonPath("$.data.created").value(true));
-    List<String> off = entries();
-    jdbc.update("delete from ranking_entries where snapshot_id in (select id from ranking_snapshots where contest_id = ?)",
-        contestId);
-    jdbc.update("delete from ranking_snapshots where contest_id = ?", contestId);
-
-    mvc.perform(post("/api/admin/contests/{id}/ranking-snapshots", contestId).param("tuning", "true"))
-        .andExpect(jsonPath("$.data.created").value(true));
-
-    assertThat(entries()).hasSize(3).isEqualTo(off);
-  }
-
-  private List<String> entries() {
-    return jdbc.queryForList("""
-        select e.rank || ':' || e.participant_id || ':' || e.total_assets from ranking_entries e
-          join ranking_snapshots s on s.id = e.snapshot_id where s.contest_id = ? order by e.rank, e.participant_id""",
-        String.class, contestId);
   }
 }

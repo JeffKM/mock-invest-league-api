@@ -5,11 +5,15 @@
 --        "Trigger for constraint ..." = 줄마다 하는 외래 키 검사(스냅샷·참가자), WAL = 쓰기 기록량.
 --   -v nofk=1 을 주면 같은 트랜잭션 안에서 ranking_entries 의 외래 키 2개를 잠시 빼고 잰다(끝의 ROLLBACK 으로 되돌아온다).
 --   그동안 ranking_entries 는 잠긴다(ACCESS EXCLUSIVE, 몇 초). 부하가 없을 때만 쓴다.
+--   -v wm=32MB 를 주면 work_mem 을 이 트랜잭션에만 바꿔 계획(해시·정렬 방식, 디스크 사용)이 어떻게 달라지는지 본다.
 \set ON_ERROR_STOP on
 begin;
 \if :{?nofk}
 alter table ranking_entries drop constraint if exists ranking_entries_snapshot_id_fkey,
                             drop constraint if exists ranking_entries_participant_id_fkey;  -- V5 뒤에는 이미 없다
+\endif
+\if :{?wm}
+select set_config('work_mem', :'wm', true);   -- 29단계: -v wm=32MB 면 스냅샷 트랜잭션처럼 이 트랜잭션에만 준다
 \endif
 insert into ranking_snapshots (contest_id, trading_day, tick_no) values (:c, date '2026-11-16', 999)
   returning id as s \gset

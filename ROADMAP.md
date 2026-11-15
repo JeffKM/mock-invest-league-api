@@ -3006,6 +3006,14 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
   | 10만 줄 지우기 | 884 ms | 0 |
 
   스냅샷 순간 앱 세션 10개(풀 전부)가 DB 에서 실행 중이었고, `LWLock:WALWrite`·`IO:WALSync`(WAL 25MB 를 내리는 동안 커밋이 줄섬)와 `IO:BufFileRead/Write`(정렬·해시가 work_mem 4MB 를 넘쳐 임시 파일)가 보였다. 스냅샷 한 장이 DB CPU 2개 중 하나와 디스크를 몇 초 독점해 다른 쿼리가 모두 느려지고, 풀이 바닥난다. 스냅샷 자체도 부하 중에는 3.9~6.6초.
+- **시도 ①: 스냅샷 트랜잭션에만 `work_mem` 32MB·`synchronous_commit = off` (`372021a`) → 되돌림.**
+  - 구현: `set_config(..., true)`(= `SET LOCAL`)로 그 트랜잭션에만. 관리자 스냅샷 API `?tuning=true|false` 로 한 장씩 켜고 꺼서 같은 부하 안에서 번갈아 쟀다(`p6-concurrent.sh snap` 이 끔 → 켬 → 끔 → 켬).
+  - 결과(5차): 끔 7.8초·8.1초(p99 최고 2,249 · 335 ms, 커넥션 대기 0 · 25). 켬 **14.6초·13.0초**(p99 9,509 · 3,208 ms 이상, 커넥션 대기 **190 · 188**, 초당 요청 3 까지 추락).
+  - 켠 구간 DB 세션 기록: 활성 7~9개인데 대기 종류가 없다 = CPU 에서 돈다. 1초 간격 감시 쿼리도 8초 밀렸다.
+  - 부하 없이 계획 비교(`p6-write.sh 2 100000 wm`): 계획은 같다. 32MB 는 임시 파일을 없앴다(HashAggregate Batches 5→1, Disk 20MB→0, 정렬 external merge→quicksort). 시간은 기본 2.06·2.60초, 32MB 2.50·2.89초로 줄지 않았다.
+  - 해석: 임시 파일·WAL 대기는 원인이 아니라 증상이었다. 기다림이 사라지자 스냅샷이 CPU 를 쉬지 않고 쥐어 vCPU 2개짜리 DB 에서 다른 쿼리가 차례를 못 받았다. 코드는 `git revert` 로 되돌렸다(`p6-concurrent.sh` 의 번갈아 찍기는 다음 시도에 다시 쓰려고 남김. 지금 `?tuning=` 은 무시된다).
+- **Q. 대기 이벤트가 없어졌는데 왜 나빠졌나?** 대기 중인 세션은 CPU 를 내놓는다. 스냅샷이 디스크를 기다리던 틈에 다른 요청이 처리되고 있었다. 대기를 없애면 그 틈도 사라진다. "대기 = 나쁨"이 아니라 "누가 자원을 쥐고 있나"를 봐야 한다.
+- **Q. 설정 둘을 왜 따로 재지 않았나?** 둘 다 "기다림을 없애는" 방향이고, 함께 켠 결과가 크게 나빴다. 따로 재서 하나를 살려도 같은 방향의 이득이라 독점 문제를 풀지 못한다. 시간을 다음 후보(나눠 쓰기)에 쓴다.
 - **Q. 모든 API 가 똑같이 느려졌다는 것은 무슨 뜻인가?** 공통 자원이 막혔다는 뜻이다. 순위 조회도 요청마다 "최근 스냅샷"을 DB 에서 찾으므로 모든 API 가 DB 를 거친다. 앱 CPU 는 11~20% 로 한가했다 → 막힌 곳은 DB.
 - **Q. CloudWatch 로 원인을 왜 못 찾았나?** 기본 지표는 1분 평균이다. 3초 동안 코어 하나를 다 써도 1분 평균은 몇 % 다. 짧은 사건은 1초 간격으로 DB 안(`pg_stat_activity`)을 직접 봐야 한다.
 - **Q. 고쳤는데 재측정에서 차이가 없으면?** 그대로 적는다. 처음 근거가 한 쌍뿐이었는지, 재현 조건(통계 상태)이 그때와 같은지부터 본다. 확인된 효과(예상 rows 가 맞음)와 확인 안 된 효과(시간 절반)를 나눠 말한다.
@@ -3029,7 +3037,7 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 # 29단계. 다음 할 일
 
-- **P6 스냅샷이 DB 를 독점하는 문제.** 싼 것부터: ① 스냅샷 트랜잭션에만 `SET LOCAL work_mem`(임시 파일 제거)·`synchronous_commit = off`(커밋이 WAL 동기화를 안 기다림) ② 1만 명씩 나눠 쓰기(독점 시간 줄이기, 전체 순위를 매기는 방법 설계 필요) ③ 읽기 복제본·총자산 미리 갱신(비용 커서 기록만). `p6-concurrent.sh` 로 같은 조건 전후 비교.
+- **P6 스냅샷이 DB 를 독점하는 문제.** ① `work_mem`·`synchronous_commit` 은 더 나빠져 되돌렸다(28단계). 다음: ② 나눠 쓰기(한 번에 쥐는 시간을 줄이고 사이에 쉬기. 다 쓰기 전에는 순위 조회가 새 스냅샷을 보지 않게 할 방법 필요) ③ 읽기 복제본·총자산 미리 갱신(비용 커서 기록만). `p6-concurrent.sh` 로 같은 조건 전후 비교. 측정이 끝나면 `p6-concurrent.sh clean`.
 - **다음 시나리오.** P4·P5·P8(정산 배치·취소 경쟁·재전송, 정산 수동 실행 API 필요) → P2·P7·N4 → P9·P10·P11·N3.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
 - **문서.** 저장소 README 에 사례 요약. 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
@@ -3072,6 +3080,7 @@ T=$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)                   # (서버) 관�
 ./psql.sh -f /sql/p6-cleanup.sql                               # (서버) p6 대회 모두 지우기(left_contests 0 이면 끝)
 ./p6-ab.sh 3                                                   # (서버) P6 전후 비교 3회(SQL 대회 ↔ API 대회)
 ./p6-write.sh 3                                                # (서버) 스냅샷 쓰기를 외래 키 있음 ↔ 없음으로 3회(ROLLBACK)
+./p6-write.sh 2 100000 wm                                      # (서버) 같은 쓰기를 work_mem 기본 ↔ 32MB 로(계획·임시 파일 비교)
 ./p6-concurrent.sh seed | snap | clean                         # (서버) 부하 중 스냅샷(snap 은 k6 와 함께, 부하를 스스로 감지)
 SCENARIO=steady SCALE=3 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 6m <이름>   # steady 6분(길이는 SCALE)
 ./psql.sh -v c=<대회 id> -f /sql/p6-write.sql </dev/null       # (서버) 쓰기 쪼개 보기. 여러 줄 붙여 넣을 땐 </dev/null 필수
