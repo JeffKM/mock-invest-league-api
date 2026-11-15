@@ -32,6 +32,11 @@ league:
     # 6주차⑤ 틱이 바뀌는 순간 같은 키를 동시에 놓친 요청 중 한 명만 DB 를 읽는다(docs/07 8절).
     # 1,000명 규모에서는 틱마다 1~2번 → 1번으로 줄었고 지연 손해는 없었다. 참가자가 늘면 동시에 놓치는 수도 커지므로 켜 둔다
     single-flight: ${LEAGUE_CACHE_SINGLE_FLIGHT:true}
+  ranking:
+    # 6주차⑦ P6 스냅샷 트랜잭션에만 work_mem 을 키우고 synchronous_commit 을 끈다(임시 파일·WAL 동기화 줄서기 줄이기).
+    # 관리자 스냅샷 API 의 ?tuning=true|false 로 한 장씩 바꿔 전후를 비교할 수 있다
+    snapshot-tuning: ${LEAGUE_SNAPSHOT_TUNING:true}
+    snapshot-work-mem: ${LEAGUE_SNAPSHOT_WORK_MEM:32MB}
   warmup:
     # 6주차⑥ 사용자 요청을 받기 전에 자기 자신에게 조회 요청을 보내 JIT 를 미리 돌린다(콜드 스타트). 끝나야 헬스 체크가 UP 이 된다
     enabled: ${LEAGUE_WARMUP:true}

@@ -13,6 +13,7 @@ import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 
@@ -45,10 +46,16 @@ public class ContestAdminController {
     return ApiResponse.ok(contestService.start(contestId));
   }
 
-  /** 지금 틱 기준 순위 스냅샷을 바로 찍는다. 스케줄러(5분마다)를 기다리지 않고 순위표를 확인할 때 쓴다. */
+  /**
+   * 지금 틱 기준 순위 스냅샷을 바로 찍는다. 스케줄러(5분마다)를 기다리지 않고 순위표를 확인할 때 쓴다.
+   * tuning(선택): 이번 한 장만 스냅샷 트랜잭션 설정(work_mem·synchronous_commit)을 켜고 끈다. 없으면 설정대로.
+   * 같은 부하 중에 켠 것과 끈 것을 번갈아 찍어 비교하려고 둔 관리자 전용 스위치다(6주차⑦ P6).
+   */
   @PostMapping("/{contestId}/ranking-snapshots")
-  public ApiResponse<SnapshotResponse> snapshot(@PathVariable Long contestId) {
-    return ApiResponse.ok(new SnapshotResponse(lifecycleService.snapshotNow(contestId, LocalDateTime.now(clock))));
+  public ApiResponse<SnapshotResponse> snapshot(@PathVariable Long contestId,
+      @RequestParam(required = false) Boolean tuning) {
+    return ApiResponse.ok(new SnapshotResponse(
+        lifecycleService.snapshotNow(contestId, LocalDateTime.now(clock), tuning)));
   }
 
   /**

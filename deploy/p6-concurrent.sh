@@ -2,7 +2,8 @@
 # 6주차⑦ P6 동시 영향: 평소 부하(k6 steady) 중에 10만 명 스냅샷을 찍으면 다른 요청이 얼마나 늦어지나.
 # 서버 /opt/league 에서 단계별로 실행한다(시드는 그 자체가 무거운 쓰기라 부하 전에 끝낸다).
 #   ./p6-concurrent.sh seed            10만 명 대회 만들기(부하 걸기 전에)
-#   ./p6-concurrent.sh snap [횟수=3] [간격초=60] [기준선초=60]   k6 와 함께(아무 때나) 시작한다.
+#   ./p6-concurrent.sh snap [횟수=4] [간격초=40] [기준선초=60]   k6 와 함께(아무 때나) 시작한다.
+#     스냅샷 트랜잭션 설정(work_mem·synchronous_commit, 29단계)을 끔 → 켬 → 끔 → 켬 으로 번갈아 찍는다(?tuning=).
 #     k6 준비(사용자 만들기) 시간은 매번 달랐다(1분 30초~2분 30초). 그래서 시각을 정해 두지 않고
 #     앱의 초당 요청 수가 80 을 넘을 때(= steady 본 부하 시작)까지 기다린 뒤 기준선만큼 더 기다려 첫 장을 찍는다.
 #     서버 시계가 고정이라 틱이 같으면 같은 스냅샷은 다시 만들지 않는다(on conflict do nothing, 3ms 만에 끝남).
@@ -48,8 +49,8 @@ case "${1:-}" in
     echo "대회=$(contest) 준비 끝 $(date -u +%H:%M:%S)"
     ;;
   snap)
-    COUNT="${2:-3}"
-    GAP="${3:-60}"
+    COUNT="${2:-4}"
+    GAP="${3:-40}"
     BASE="${4:-60}"
     T="$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)"
     C="$(contest)"
@@ -64,9 +65,11 @@ case "${1:-}" in
     act=$!
     sleep 5
     for i in $(seq 1 "$COUNT"); do
+      if [ $((i % 2)) -eq 1 ]; then tuning=false; else tuning=true; fi
       start="$(date -u +%H:%M:%S)"
-      took="$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' -X POST -H "X-Admin-Token: $T" "$A/$C/ranking-snapshots")"
-      echo "스냅샷 $i 대회=$C 시작=$start 결과=$took"
+      took="$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' -X POST -H "X-Admin-Token: $T" \
+        "$A/$C/ranking-snapshots?tuning=$tuning")"
+      echo "스냅샷 $i 설정=$tuning 대회=$C 시작=$start 결과=$took"
       sleep 20
       drop_snapshots "$C"
       echo "  지움 끝 $(date -u +%H:%M:%S)"

@@ -14,6 +14,7 @@ import java.util.List;
 import java.util.Optional;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -30,25 +31,41 @@ public class RankingService {
   private final ContestRepository contestRepository;
   private final RankingRepository rankingRepository;
   private final ReadCache readCache;
+  private final boolean snapshotTuning;
+  private final String snapshotWorkMem;
 
   public RankingService(ContestRepository contestRepository, RankingRepository rankingRepository,
-      ReadCache readCache) {
+      ReadCache readCache,
+      @Value("${league.ranking.snapshot-tuning:true}") boolean snapshotTuning,
+      @Value("${league.ranking.snapshot-work-mem:32MB}") String snapshotWorkMem) {
     this.contestRepository = contestRepository;
     this.rankingRepository = rankingRepository;
     this.readCache = readCache;
+    this.snapshotTuning = snapshotTuning;
+    this.snapshotWorkMem = snapshotWorkMem;
+  }
+
+  /** 설정(league.ranking.snapshot-tuning)대로 찍는다. 스케줄러가 부른다. */
+  @Transactional
+  public boolean takeSnapshot(Long contestId, TickPosition at) {
+    return takeSnapshot(contestId, at, snapshotTuning);
   }
 
   /**
    * at 시점 스냅샷을 찍는다. 이미 있으면 아무것도 하지 않는다(멱등).
    * 머리 행과 줄들을 한 트랜잭션에 넣는다: 머리만 있고 줄이 없는 "빈 순위표"가 보이지 않게.
    *
+   * @param tuning 이 트랜잭션에만 work_mem·synchronous_commit 설정을 줄지(6주차⑦ P6). 관리자 API 로 전후를 번갈아 잴 때 바꾼다
    * @return 새로 찍었으면 true
    */
   @Transactional
-  public boolean takeSnapshot(Long contestId, TickPosition at) {
+  public boolean takeSnapshot(Long contestId, TickPosition at, boolean tuning) {
     Optional<Long> snapshotId = rankingRepository.createSnapshot(contestId, at);
     if (snapshotId.isEmpty()) {
       return false;
+    }
+    if (tuning) {
+      rankingRepository.tuneSnapshotTransaction(snapshotWorkMem);
     }
     int rows = rankingRepository.fillEntries(snapshotId.get(), contestId, at);
     log.info("순위 스냅샷: contest={}, {} {}틱, {}명", contestId, at.day(), at.tick(), rows);
