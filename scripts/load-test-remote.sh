@@ -4,6 +4,7 @@
 #   예) read -s ADMIN_TOKEN; export ADMIN_TOKEN; scripts/load-test-remote.sh http://3.107.29.43 1 2m laptop
 # 노트북(macOS)과 AWS CloudShell(Linux) 양쪽에서 돈다. 결과는 build/k6/remote-<LABEL>-<시각>/
 # SCENARIO=steady|rush|tick|hot|journey 를 주면 realistic.js 의 그 시나리오를 돌린다(비우면 league.js, 예전 기준)
+# realistic.js 시나리오의 길이는 DURATION 이 아니라 SCALE(단계 길이 배율)로 정한다. 예) steady 2분 × SCALE=3 = 6분
 # 그래프: 노트북에서 monitoring/up.sh <서버 IP> 를 띄워 두면 Grafana(localhost:3000)에 서버 지표가 그려진다
 #   (서버 .env 의 ACTUATOR_EXPOSE 에 prometheus 가 있어야 한다)
 set -euo pipefail
@@ -62,7 +63,7 @@ START_MS="$(date +%s)000"
 set +e
 (
   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run -e BASE_URL="$BASE" -e ADMIN_TOKEN="$ADMIN_TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" \
+    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 &
   pid=$!
   ( sleep "$WATCHDOG"; kill -9 "$pid" 2>/dev/null ) & wd=$!
