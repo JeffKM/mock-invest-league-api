@@ -107,7 +107,15 @@ public class InvariantAuditService {
                                       or o.filled_at is null))
             or (o.status <> 'FILLED' and (o.filled_price is not null or o.fee is not null
                                           or o.filled_tick is not null or o.filled_at is not null)))
-          order by o.id"""));
+          order by o.id"""),
+      // 6주차⑦: 순위 줄의 외래 키를 뺐다(V5). DB 대신 이 검사가 "가리키는 참가자가 있고 같은 대회다"를 확인한다
+      new Rule("RANKING_ENTRY_REFS", "순위 줄이 가리키는 참가자는 있고, 그 스냅샷과 같은 대회의 참가자다",
+          """
+          select e.participant_id from ranking_snapshots s
+          join ranking_entries e on e.snapshot_id = s.id
+          left join participants p on p.id = e.participant_id
+          where s.contest_id = ? and (p.id is null or p.contest_id <> s.contest_id)
+          order by e.participant_id"""));
 
   @Transactional(readOnly = true, isolation = Isolation.REPEATABLE_READ)
   public Report audit(Long contestId) {

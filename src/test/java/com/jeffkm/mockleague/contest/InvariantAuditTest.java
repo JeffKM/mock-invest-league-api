@@ -68,7 +68,7 @@ class InvariantAuditTest {
     api.fetch("/api/admin/contests/{id}/invariants", contestId)
         .andExpect(status().isOk())
         .andExpect(jsonPath("$.data.ok").value(true))
-        .andExpect(jsonPath("$.data.checks.length()").value(6));
+        .andExpect(jsonPath("$.data.checks.length()").value(7)); // 7번째: 순위 줄 참조(V5)
   }
 
   @Test
@@ -125,6 +125,24 @@ class InvariantAuditTest {
         contestId);
 
     assertThat(violations(auditService.audit(contestId), "I10_FILL_FIELDS_MATCH_STATUS")).isEqualTo(1);
+  }
+
+  @Test
+  void 순위_줄이_없는_참가자를_가리키면_잡는다() {
+    // 외래 키를 뺐으므로(V5) DB 가 막지 않는다. 바로 그 빈자리를 검사가 메우는지 본다
+    Long snapshotId = jdbc.queryForObject("""
+        insert into ranking_snapshots (contest_id, trading_day, tick_no) values (?, date '2026-12-01', 77)
+        returning id""", Long.class, contestId);
+    Long participantId = jdbc.queryForObject(
+        "select id from participants where contest_id = ? and user_id = ?", Long.class, contestId, userId);
+    jdbc.update("insert into ranking_entries (snapshot_id, participant_id, rank, total_assets) values (?, ?, 1, 1)",
+        snapshotId, participantId);
+    assertThat(violations(auditService.audit(contestId), "RANKING_ENTRY_REFS")).isZero();
+
+    jdbc.update("insert into ranking_entries (snapshot_id, participant_id, rank, total_assets) values (?, ?, 2, 1)",
+        snapshotId, 987_654_321L);
+
+    assertThat(violations(auditService.audit(contestId), "RANKING_ENTRY_REFS")).isEqualTo(1);
   }
 
   private static long violations(Report report, String code) {
