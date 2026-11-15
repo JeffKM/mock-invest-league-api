@@ -72,7 +72,8 @@ public class ContestService {
     LocalDate through = today.isBefore(contest.getStartsOn()) ? contest.getStartsOn() : today;
     priceGenerationService.ensureGeneratedThrough(contestId, through); // 종료일을 넘으면 안에서 잘라 낸다
     // 6주차⑦ P6: 새 대회의 상장 24줄은 자동 ANALYZE 기준(50줄 + 10%)에 못 미쳐 통계에 없다. 그러면 플래너가 이 대회의
-    // 종목을 1개로 예상해 순위 스냅샷에서 보유 행마다 종목을 다시 훑는 중첩 루프를 고른다(10만 명에서 3.2초 → 고친 뒤 1.5초).
+    // 종목을 1개로 예상한다(실제 24개). 한 번은 이 예상 때문에 순위 스냅샷이 보유 행마다 종목을 다시 훑는 중첩 루프를 골랐다.
+    // 다만 전후 재측정에서는 예상이 1줄이어도 해시 조인을 골라 시간 차이가 없었다(docs/07 10절). 예상을 바로잡는 값싼 보험으로 둔다.
     // 작은 표라 몇 ms 면 끝난다. 읽기·쓰기를 막지 않는 잠금(SHARE UPDATE EXCLUSIVE)만 잡는다.
     jdbc.execute("analyze contest_listings");
     return ContestResponse.from(contest, listingRepository.findByIdContestId(contestId).size());
