@@ -3022,6 +3022,16 @@ node monitoring/capture.mjs <이름> <시작초> <끝초> [패널]   # Grafana �
 ./psql.sh -f /sql/autovacuum.sql            # (서버 /opt/league) RDS autovacuum 기록
 ./psql.sh -tA -F ' ' -f /sql/activity.sql   # (서버) 1초마다 DB 세션 대기 종류, 150초
 vmstat -t 1 100                             # (서버) 1초마다 CPU·스왑·steal(st)
+./deploy.sh ghcr.io/jeffkm/mock-invest-league-api:<커밋 sha>   # (서버) 새 이미지 배포, 헬스 UP 아니면 되돌림
+docker inspect league-app --format '{{.Config.Image}}'          # (서버) 지금 떠 있는 이미지 확인
+T=$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)                   # (서버) 관리자 토큰을 셸 변수로만(화면에 안 찍힘)
+./psql.sh -v n=100000 -f /sql/p6-seed.sql                      # (서버) 10만 명 대회를 SQL 로 만들기
+./psql.sh -v n=100000 -v c=<대회 id> -f /sql/p6-seed.sql       # (서버) API 로 만든 대회에 참가자만 채우기
+./psql.sh -v c=<대회 id> -f /sql/p6-explain.sql                # (서버) 스냅샷 읽기 부분 실행 계획
+./psql.sh -f /sql/p6-cleanup.sql                               # (서버) p6 대회 모두 지우기(left_contests 0 이면 끝)
+./p6-ab.sh 3                                                   # (서버) P6 전후 비교 3회(SQL 대회 ↔ API 대회)
+scp -i ~/.ssh/league.pem deploy/p6-ab.sh ec2-user@<EC2 IP>:/opt/league/   # 스크립트 하나만 올리기
+# 긴 명령은 붙여 넣다가 터미널 폭에서 줄이 꺾여 깨진다(28단계) → 스크립트 파일로 올려서 돌린다
 ./gradlew bootJar && scripts/cache-bench.sh 10000 20   # 캐시 비교(없음·서버 메모리·Redis). 결과 build/bench/summary.txt
 CACHE_TYPE=redis REDIS_HEALTH=true ./gradlew bootRun  # Redis 캐시로 띄우기
 grep -h '\[성능\]' build/test-results/test/*QueryPerformance*.xml  # 성능 수치만 보기
