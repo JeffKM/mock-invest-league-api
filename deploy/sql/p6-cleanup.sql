@@ -23,4 +23,5 @@ delete from contests where id in (select id from p6c);
 drop index p6c_ranking_entries_participant;
 drop index p6c_participants_user;
 commit;
+drop table if exists p6_totals;  -- p6-chunk.sql 의 작업용 표(시도 ② 시험판)
 select count(*) as left_contests from contests where name like 'p6-scale-%';

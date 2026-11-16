@@ -10,7 +10,10 @@
 #     서버 시계가 고정이라 틱이 같으면 같은 스냅샷은 다시 만들지 않는다(on conflict do nothing, 3ms 만에 끝남).
 #     그래서 찍은 스냅샷을 지워 다음 장이 진짜로 계산되게 한다. 지우기(10만 줄)도 DB 일이라
 #     스냅샷과 같은 10초 창에 섞이지 않게 20초 뒤에 지운다.
-#     첫 장 직전부터 150초 동안 1초마다 DB 세션 상태(activity.sql)를 같이 기록한다 → activity-<시각>.txt
+#     첫 장 직전부터 (횟수 × 간격 + 10)초 동안 1초마다 DB 세션 상태(activity.sql)를 같이 기록한다 → activity-<시각>.txt
+#   ./p6-concurrent.sh probe [횟수=4] [간격초=40] [기준선초=60] [구간=10000] [쉼초=0.2] [먼저=one|chunk]
+#     시도 ②의 시험판(앱을 바꾸기 전, SQL 만으로). 한 문장 → 나눠 찍기 → 한 문장 → 나눠 찍기 로 번갈아(p6-chunk.sql).
+#     스냅샷은 psql 이 찍는다(앱 API 아님). 틱 번호는 901, 902… 를 써서 앱의 순위 조회와 섞이지 않는다.
 #   ./p6-concurrent.sh clean           p6 대회 지우기(부하 끝난 뒤)
 # 시각(UTC)을 찍어 두면 Grafana 에서 그 구간을 찾는다. psql.sh 호출에는 </dev/null (28단계)
 set -euo pipefail
@@ -49,10 +52,14 @@ case "${1:-}" in
     ./psql.sh -v n="${2:-100000}" -f /sql/p6-seed.sql </dev/null > /dev/null
     echo "대회=$(contest) 준비 끝 $(date -u +%H:%M:%S)"
     ;;
-  snap)
+  snap|probe)
+    MODE="$1"
     COUNT="${2:-4}"
     GAP="${3:-40}"
     BASE="${4:-60}"
+    CHUNK="${5:-10000}"
+    PAUSE="${6:-0.2}"
+    FIRST="${7:-one}"   # one: 한 문장(설정 끔)부터, chunk: 나눠 찍기(설정 켬)부터. 첫 장이 늘 나빴다 → 순서를 뒤집어 확인
     T="$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)"
     C="$(contest)"
     [ -n "$C" ] || { echo "p6 대회가 없습니다. 먼저 seed" >&2; exit 1; }
@@ -62,15 +69,27 @@ case "${1:-}" in
     echo "부하 시작 확인 $(date -u +%H:%M:%S), 기준선 ${BASE}초"
     sleep "$((BASE - 5))"
     LOG="activity-$(date -u +%H%M%S).txt"
-    ./psql.sh -tA -F ' ' -f /sql/activity.sql </dev/null > "$LOG" 2>&1 &
+    ./psql.sh -tA -F ' ' -v cnt="$((COUNT * GAP + 10))" -f /sql/activity.sql </dev/null > "$LOG" 2>&1 &
     act=$!
     sleep 5
     for i in $(seq 1 "$COUNT"); do
       if [ $((i % 2)) -eq 1 ]; then tuning=false; else tuning=true; fi
+      if [ "$FIRST" = chunk ]; then
+        if [ "$tuning" = true ]; then tuning=false; else tuning=true; fi
+      fi
       start="$(date -u +%H:%M:%S)"
-      took="$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' -X POST -H "X-Admin-Token: $T" \
-        "$A/$C/ranking-snapshots?tuning=$tuning")"
-      echo "스냅샷 $i 설정=$tuning 대회=$C 시작=$start 결과=$took"
+      if [ "$MODE" = probe ]; then
+        if [ "$tuning" = true ]; then chunked=1; how="나눠(${CHUNK}명, ${PAUSE}초 쉼)"; else chunked=0; how="한 문장"; fi
+        t0="$(date +%s.%N)"
+        ./psql.sh -v c="$C" -v t="$((900 + i))" -v chunked="$chunked" -v n="$CHUNK" -v pause="$PAUSE" \
+          -f /sql/p6-chunk.sql </dev/null > /dev/null
+        took="$(awk -v a="$t0" -v b="$(date +%s.%N)" 'BEGIN {printf "%.2f", b - a}')s"
+        echo "스냅샷 $i 방식=$how 대회=$C 시작=$start 걸림=$took(psql 띄우기 포함)"
+      else
+        took="$(curl -s -o /dev/null -w '%{http_code} %{time_total}s' -X POST -H "X-Admin-Token: $T" \
+          "$A/$C/ranking-snapshots?tuning=$tuning")"
+        echo "스냅샷 $i 설정=$tuning 대회=$C 시작=$start 결과=$took"
+      fi
       sleep 20
       drop_snapshots "$C"
       echo "  지움 끝 $(date -u +%H:%M:%S)"
@@ -85,7 +104,7 @@ case "${1:-}" in
     ./psql.sh -f /sql/p6-cleanup.sql </dev/null | tail -3
     ;;
   *)
-    echo "사용: $0 seed | snap [횟수] [간격초] [기준선초] | clean" >&2
+    echo "사용: $0 seed | snap [횟수] [간격초] [기준선초] | probe [횟수] [간격초] [기준선초] [구간] [쉼초] [one|chunk] | clean" >&2
     exit 1
     ;;
 esac
