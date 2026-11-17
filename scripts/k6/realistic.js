@@ -1,4 +1,4 @@
-// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey
+// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle
 //   steady  기준선: 평소 속도(주문 1 : 조회 3)를 일정하게. 나머지 시나리오를 이것과 비교한다
 //   rush    장 시작 몰림: 평소 → 4배로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
@@ -7,12 +7,15 @@
 //           TICK_ALIGN=0 이면 기다리지 않고 바로 시작한다(배포 직후 첫 몰림을 재는 콜드 스타트 측정용, 6주차⑥)
 //   hot     같은 계좌 연타·재전송: 계좌 몇 개에 주문이 몰린다. 동시 두 번 누르기와 늦은 재전송이 같은 주문을 돌려주는지
 //   journey 사용 흐름: 계좌 → 공시 → 매수 → 주문 확인 → (지정가 걸고 취소 | 매도) → 순위, 사이사이 생각하는 시간
+//   settle  정산 폭주(P4)·취소 경쟁(P5, 6주차⑧): 준비 때 "지금 가격이면 체결될" 매수 지정가를 사용자마다 LIMITS 개 걸어 둔다.
+//           평소 부하(steady 와 같은 섞음) 중 40초에 관리자 정산 API 를 한 번 불러 수천 건을 한꺼번에 체결시킨다.
+//           그동안 같은 사용자들이 시장가 주문(같은 계좌 잠금을 두고 배치와 경합)과 대기 주문 취소(배치와 같은 주문을 두고 경합)를 한다
 // league.js(일정한 속도, 매수·조회만)는 비교 기준으로 그대로 둔다.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
 import exec from 'k6/execution';
 import { Counter } from 'k6/metrics';
-import { JSON_HEADERS, TICKERS, pick, prepare, errorCode, summaryText, auditInvariants } from './lib.js';
+import { JSON_HEADERS, TICKERS, pick, must, prepare, errorCode, summaryText, auditInvariants } from './lib.js';
 
 const SCENARIO = __ENV.SCENARIO || 'journey';
 const BASE = __ENV.BASE_URL || 'http://localhost:18081';
@@ -25,6 +28,8 @@ const SUMMARY = __ENV.SUMMARY || `build/k6/${SCENARIO}.json`;
 const SCALE = Number(__ENV.SCALE || 1);     // 단계 길이 배율. 로컬에서 시나리오가 도는지만 볼 때 0.2 등
 const RTT_MS = Number(__ENV.RTT_MS || 0);   // 부하 발생기 ↔ 서버 왕복. 지연 기준에 더한다(러너가 재서 넘긴다)
 const HOT_USERS = Number(__ENV.HOT_USERS || 5);
+const LIMITS = Number(__ENV.LIMITS || 3);         // settle: 사용자마다 걸어 둘 지정가 수
+const SETTLE_AT = 40;                              // settle: 정산을 부르는 시각(초, SCALE 적용 전)
 
 // docs/01 5절 가정(주문 30 TPS, 조회 90 TPS)의 MULT 배가 "평소"다
 const ORDER_TPS = 30 * MULT;
@@ -71,6 +76,10 @@ const SCENARIOS = {
     executor: 'constant-arrival-rate', exec: 'hot', rate: ORDER_TPS, timeUnit: '1s', duration: sec(120),
     preAllocatedVUs: 50, maxVUs: 400,
   },
+  settle: {
+    executor: 'constant-arrival-rate', exec: 'settleMixed', rate: NORMAL, timeUnit: '1s', duration: sec(120),
+    preAllocatedVUs: 100, maxVUs: 1500,
+  },
   journey: {
     executor: 'constant-arrival-rate', exec: 'journey', rate: Math.max(1, Math.round(10 * MULT)), timeUnit: '1s',
     duration: sec(120), preAllocatedVUs: 100, maxVUs: 1500,
@@ -101,6 +110,10 @@ const THRESHOLDS = {
     'http_req_duration{kind:order}': [`p(95)<${ms(300)}`],
     'http_req_failed': ['rate<0.01'],
   },
+  settle: {
+    'http_req_duration{phase:before}': [`p(95)<${ms(300)}`],
+    'http_req_failed': ['rate<0.01'],
+  },
   journey: {
     'http_req_duration{kind:order}': [`p(95)<${ms(300)}`],
     'http_req_duration{kind:read}': [`p(95)<${ms(200)}`],
@@ -113,6 +126,11 @@ const EXTRA = SCENARIO === 'tick' && ADMIN ? {
   tickSnapshot: {
     executor: 'constant-arrival-rate', exec: 'takeSnapshot', rate: 1, timeUnit: sec(60), duration: sec(180),
     preAllocatedVUs: 1, maxVUs: 2,
+  },
+} : SCENARIO === 'settle' && ADMIN ? {
+  settleBatch: {
+    executor: 'shared-iterations', exec: 'runSettlement', iterations: 1, vus: 1, startTime: sec(SETTLE_AT),
+    maxDuration: '10m',
   },
 } : {};
 
@@ -131,6 +149,8 @@ const ROWS = {
   rush: ['phase:before', 'phase:peak', 'phase:after', 'kind:order', 'kind:read'],
   tick: ['phase:burst', 'phase:calm', 'kind:order', 'kind:read'],
   hot: ['name:POST orders(buy)', 'name:POST orders(sell)', 'name:POST orders(double)', 'name:POST orders(resend)'],
+  settle: ['phase:before', 'phase:storm', 'phase:after', 'name:POST orders(market)', 'name:DELETE order(pending)',
+    'name:POST limit-settlements', 'kind:order', 'kind:read'],
   journey: ['name:GET me', 'name:GET disclosures', 'name:POST orders(market)', 'name:GET orders', 'name:POST orders(limit)',
     'name:DELETE order', 'name:POST orders(sell)', 'name:GET rankings', 'kind:order', 'kind:read'],
 };
@@ -155,7 +175,56 @@ export function setup() {
     console.log(`틱 경계(매분 30초)에 맞추려고 ${(wait / 1000).toFixed(1)}초 기다린다`);
     sleep(wait / 1000);
   }
+  if (SCENARIO === 'settle') {
+    data.limitOrders = placeLimitOrders(data);
+  }
   return data;
+}
+
+/**
+ * settle 준비: 종목마다 시장가 1주로 지금 가격을 알아낸 뒤, 사용자마다 LIMITS 개의 매수 지정가를 지금 가격 +1% 에 건다.
+ * 지정가 주문은 접수 때 체결하지 않으므로(정산 배치가 가격 경로를 보고 체결) 모두 PENDING 으로 남는다.
+ * 서버 시계가 고정이라 정산을 부르면 지금 틱 가격으로 전부 닿아 한꺼번에 체결된다.
+ */
+function placeLimitOrders(data) {
+  const c = data.contestId;
+  const opts = (user, key) => ({ headers: { ...JSON_HEADERS, 'X-User-Id': String(user), 'Idempotency-Key': key } });
+  const price = {};
+  TICKERS.forEach((t, i) => {
+    // 한 사용자로 24번 연달아 보내면 주문 속도 제한(초당 5, 연속 10)에 걸린다 → 종목마다 다른 사용자
+    const user = data.users[i % data.users.length];
+    const res = http.post(`${BASE}/api/contests/${c}/orders`, JSON.stringify(market(t, 'BUY', 1)), opts(user, `price-${t}`));
+    must(res, `가격 알아내기(${t})`);
+    price[t] = res.json('data.filledPrice');
+  });
+  const wanted = [];
+  for (let k = 0; k < LIMITS; k++) {
+    for (const user of data.users) {
+      const ticker = pick(TICKERS);
+      wanted.push({ user, body: { ticker, side: 'BUY', quantity: 1, type: 'LIMIT', limitPrice: Math.ceil(price[ticker] * 1.01) } });
+    }
+  }
+  const placed = [];
+  for (let i = 0; i < wanted.length; i += 50) {
+    const batch = wanted.slice(i, i + 50);
+    const res = http.batch(batch.map((w, j) => ['POST', `${BASE}/api/contests/${c}/orders`, JSON.stringify(w.body),
+      opts(w.user, `limit-${i + j}`)]));
+    res.forEach((r, j) => {
+      if (r.status === 200 && r.json('data.status') === 'PENDING') {
+        placed.push([batch[j].user, r.json('data.orderId')]);
+      }
+    });
+  }
+  console.log(`지정가 대기 주문 ${placed.length}건 (원한 수 ${wanted.length})`);
+  return placed;
+}
+
+/** settle: 40초에 한 번, 관리자 정산 API. 끝날 때까지 기다리고 결과를 남긴다. */
+export function runSettlement(data) {
+  const res = http.post(`${BASE}/api/admin/contests/${data.contestId}/limit-settlements`, null,
+    { headers: { 'X-Admin-Token': ADMIN }, tags: { kind: 'admin', name: 'POST limit-settlements', phase: 'storm' },
+      timeout: '600s' });
+  console.log(`정산: ${res.status} ${res.status === 200 ? JSON.stringify(res.json('data')) : res.body}`);
 }
 
 /** tick: 스케줄러가 할 일(새 틱의 순위 스냅샷)을 폭주 1초 뒤에 한다. 서버 시계가 고정이면 같은 틱이라 새로 찍히지 않는다. */
@@ -178,6 +247,11 @@ function phase() {
   }
   if (SCENARIO === 'tick') {
     return elapsed() % 60 < 12 ? 'burst' : 'calm';
+  }
+  if (SCENARIO === 'settle') {
+    // 정산이 몇 초 걸릴지 모르므로 넉넉히 30초를 폭주 구간으로 본다. 실제 끝 시각은 정산 응답의 elapsedMs 로 본다
+    const t = elapsed();
+    return t < SETTLE_AT ? 'before' : t < SETTLE_AT + 30 ? 'storm' : 'after';
   }
   return 'all';
 }
@@ -231,6 +305,18 @@ export function mixed(data) {
   } else {
     get(`/api/contests/${c}/disclosures?limit=20`, user, 'read', 'GET disclosures');
   }
+}
+
+/** settle: steady 와 같은 섞음에 "대기 주문 취소" 10% 를 넣는다. 취소는 정산 전엔 성공, 정산과 겹치면 둘 중 하나만 이긴다. */
+export function settleMixed(data) {
+  if (Math.random() < 0.1 && data.limitOrders.length > 0) {
+    const [user, orderId] = pick(data.limitOrders);
+    record(http.del(`${BASE}/api/contests/${data.contestId}/orders/${orderId}`, null, {
+      headers: { 'X-User-Id': String(user) }, tags: { kind: 'order', name: 'DELETE order(pending)', phase: phase() },
+    }));
+    return;
+  }
+  mixed(data);
 }
 
 /** tick: 새 틱이 뜨면 계좌·순위를 연다. 주문은 조금. */

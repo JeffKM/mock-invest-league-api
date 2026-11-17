@@ -3068,10 +3068,37 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 29단계. 다음 할 일
+# 29단계. P4 정산 폭주 · P5 취소 경쟁 (6주차⑧)
+
+## 한 일
+
+- **관리자 정산 API `POST /api/admin/contests/{id}/limit-settlements`.** 1분마다 도는 스케줄러와 같은 코드(`LimitOrderSettlementService.settle`)를 바로 부르고, 결과별 건수(filled·expired·pending·skipped)와 걸린 시간(elapsedMs)을 돌려준다.
+  - 왜 필요한가: 스케줄러의 cron 은 **실제 시각** 9~15시에만 돈다(`0 * 9-15 * * *`, Asia/Seoul). 서버 시계를 장중으로 고정해도 cron 은 진짜 시계를 본다. 저녁에 재는 부하 테스트에서는 정산이 한 번도 돌지 않는다.
+  - 테스트 `LimitOrderTest.관리자_정산_API는_…`: 닿기 전 pending 1 → 닿은 틱 뒤 filled 1 → 다시 부르면 0, I5(현금 + 묶인 현금 = 원장 합계) 유지.
+- **k6 시나리오 `settle`(`scripts/k6/realistic.js`).**
+  - 준비: 종목마다 시장가 1주로 지금 가격을 알아내고(한 사용자로 24번 보내면 주문 속도 제한에 걸려 종목마다 다른 사용자), 사용자마다 `LIMITS`(기본 3)개의 매수 지정가를 "지금 가격 +1%"에 건다. 지정가는 접수 때 체결하지 않으니 모두 대기로 남는다. 1,000명이면 3,000건.
+  - 본 부하: steady 와 같은 섞음(초당 120건) + 그중 10% 는 준비 때 건 대기 주문 취소.
+  - 40초에 관리자 정산 API 한 번(`settleBatch` 흐름). 서버 시계가 고정이라 대기 주문이 지금 틱 가격으로 전부 닿아 한꺼번에 체결된다.
+  - 구간 태그: before(0~40초) · storm(40~70초) · after. 정산이 실제로 언제 끝났는지는 응답의 elapsedMs 와 앱 로그로 본다.
+  - 보려는 것(가설): 정산은 주문 하나 = 트랜잭션 하나로 계좌를 잠근다(`findByIdForUpdate`). 수천 건을 한 줄로 처리하는 동안 같은 사용자의 시장가 주문·취소가 그 잠금을 기다리며 커넥션을 쥐면 P1 처럼 풀이 바닥날 수 있다. 취소와 체결이 같은 주문을 동시에 건드려도 한 번만 처리되는지(I10)는 끝난 뒤 불변식 검사로 본다.
+- **로컬 짧은 실행(사용자 100명, 0.2배, 맥 부하 평균 20~45).** 대기 300건 중 취소된 것을 빼고 정산 1번에 239건 체결, 13건은 그 사이 취소돼 건너뜀(SKIPPED). 취소 73건은 이미 체결·취소돼 409. 불변식 위반 0, 500 0. 맥이 과부하라 시간은 믿지 않는다(정산 14.6초 = 1건에 58 ms).
+- **러너:** `load-test.sh`·`load-test-remote.sh` 가 `LIMITS` 를 넘긴다.
+
+## 왜
+
+- 정산 배치는 "지정가 주문 수 × 한 건 처리 시간"만큼 걸린다. 주문이 몰리는 날 1분 주기 안에 끝나지 않으면 다음 실행과 겹치고, 그동안 사용자 요청과 같은 계좌 잠금을 두고 다툰다. 코드를 읽어 세운 가설이라 부하로 확인해야 한다.
+
+## 외울 것
+
+- **Q. 스케줄러 대신 API 로 부르는 것이 공정한가?** 같은 메서드(`settle`)를 부르므로 일의 내용은 같다. 다른 점은 "언제"뿐이다. 측정에서는 시각을 정확히 정해야 그래프에서 그 구간을 찾을 수 있으니 오히려 낫다.
+- **Q. 시계를 고정했는데 왜 cron 은 안 도나?** `@Scheduled(cron)` 은 스프링 스케줄러가 시스템 시간으로 다음 실행 시각을 계산한다. 우리가 주입한 `Clock` 빈은 "지금 몇 시로 볼지"만 바꾼다.
+
+---
+
+# 30단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P4·P5·P8(정산 배치·취소 경쟁·재전송, 정산 수동 실행 API 필요) → P2·P7·N4 → P9·P10·P11·N3.
+- **다음 시나리오.** P4·P5 측정(29단계) → P8(재전송) → P2·P7·N4 → P9·P10·P11·N3.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
 - **문서.** 저장소 README 에 사례 요약. 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
 
@@ -3116,6 +3143,8 @@ T=$(grep '^ADMIN_TOKEN=' .env | cut -d= -f2-)                   # (서버) 관�
 ./p6-write.sh 2 100000 wm                                      # (서버) 같은 쓰기를 work_mem 기본 ↔ 32MB 로(계획·임시 파일 비교)
 ./p6-concurrent.sh probe 4 40 60 10000 0.2                     # (서버) 부하 중 한 문장 ↔ 나눠 찍기(1만 명씩, 0.2초 쉼) 번갈아
 ./p6-concurrent.sh probe 6 40 60 10000 0.2 chunk               # (서버) 같은 비교를 나눠 찍기부터(첫 장 효과 가르기)
+SCENARIO=settle SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 2m p4   # P4·P5 정산 폭주(사용자마다 지정가 LIMITS=3개, 40초에 정산)
+curl -X POST -H "X-Admin-Token: $T" localhost/api/admin/contests/<id>/limit-settlements   # (서버) 지정가 정산 바로 돌리기
 python3 scripts/slow-requests.py <UTC 날짜> 이름=HH:MM:SS …      # (맥) 스냅샷 구간마다 느린 요청 수(Prometheus)
 ./p6-concurrent.sh seed | snap | clean                         # (서버) 부하 중 스냅샷(snap 은 k6 와 함께, 부하를 스스로 감지)
 SCENARIO=steady SCALE=3 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 6m <이름>   # steady 6분(길이는 SCALE)

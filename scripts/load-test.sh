@@ -70,7 +70,7 @@ before="$(PGDB=$DB psql -c "select xact_commit, blks_read, blks_hit from pg_stat
 START_MS="$(date +%s)000"
 set +e
 ( K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run --quiet -e BASE_URL="http://localhost:$PORT" -e ADMIN_TOKEN="$TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e SCALE="${SCALE:-1}" \
+    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 & pid=$!
   ( sleep 1200; kill -9 $pid 2>/dev/null ) & wd=$!
   wait $pid; code=$?; kill $wd 2>/dev/null; exit $code )

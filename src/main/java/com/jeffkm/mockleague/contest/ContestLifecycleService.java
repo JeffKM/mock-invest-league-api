@@ -3,10 +3,12 @@ package com.jeffkm.mockleague.contest;
 import com.jeffkm.mockleague.common.BusinessException;
 import com.jeffkm.mockleague.common.ErrorCode;
 import com.jeffkm.mockleague.market.PriceGenerationService;
+import com.jeffkm.mockleague.order.LimitOrderExecutor;
 import com.jeffkm.mockleague.order.LimitOrderSettlementService;
 import com.jeffkm.mockleague.ranking.RankingService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.util.Map;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -100,6 +102,19 @@ public class ContestLifecycleService {
       throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
     }
     return c.latestVisibleTick(now).map(at -> rankingService.takeSnapshot(c.getId(), at)).orElse(false);
+  }
+
+  /**
+   * 관리자가 이 대회의 지정가 정산을 바로 돌린다(6주차⑧ P4 정산 폭주 측정용). 스케줄러와 같은 코드를 탄다.
+   * 스케줄러는 실제 시각 9~15시에만 돌므로, 고정 시계로 밤에 재는 부하 테스트에서는 이 API 로 부른다.
+   */
+  public Map<LimitOrderExecutor.Outcome, Integer> settleNow(Long contestId, LocalDateTime now) {
+    Contest c = contestRepository.findById(contestId)
+        .orElseThrow(() -> new BusinessException(ErrorCode.NOT_FOUND, "대회를 찾을 수 없습니다."));
+    if (c.getStatus() != ContestStatus.RUNNING) {
+      throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
+    }
+    return settlementService.settle(contestId, now);
   }
 
   private void snapshot(Contest c, LocalDateTime now) {

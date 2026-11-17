@@ -359,6 +359,32 @@ class LimitOrderTest {
         .contentType(MediaType.APPLICATION_JSON).content(json));
   }
 
+  @Test
+  void 관리자_정산_API는_지금_틱까지_닿은_주문을_체결하고_건수를_돌려준다() throws Exception {
+    String ticker = tickerWithLateLow(10);
+    long[] p = path(ticker);
+    long limitPrice = p[0] - 1;                   // 0번 틱 가격보다 1원 낮게: 지금은 안 닿는다
+    int touch = firstTick(p, x -> x <= limitPrice);
+    limit("api-settle", ticker, OrderSide.BUY, 1, limitPrice);
+
+    clock.set(DAY.atTime(9, 0));                  // 아직 0번 틱 → 대기
+    mvc.perform(post("/api/admin/contests/{id}/limit-settlements", contestId))
+        .andExpect(status().isOk())
+        .andExpect(jsonPath("$.data.filled").value(0))
+        .andExpect(jsonPath("$.data.pending").value(1));
+
+    clock.set(DAY.atTime(9, 0).plusMinutes(5L * touch));   // 닿은 틱이 공개된 뒤
+    mvc.perform(post("/api/admin/contests/{id}/limit-settlements", contestId))
+        .andExpect(jsonPath("$.data.filled").value(1))
+        .andExpect(jsonPath("$.data.elapsedMs").isNumber());
+    assertThat(statusOf("api-settle")).isEqualTo(OrderStatus.FILLED);
+
+    mvc.perform(post("/api/admin/contests/{id}/limit-settlements", contestId))   // 더 할 것이 없다
+        .andExpect(jsonPath("$.data.filled").value(0))
+        .andExpect(jsonPath("$.data.pending").value(0));
+    assertI5();
+  }
+
   void settleAt(int hour, int minute) {
     clock.set(DAY.atTime(hour, minute));
     settlementService.settle(contestId, java.time.LocalDateTime.now(clock));

@@ -3,10 +3,13 @@ package com.jeffkm.mockleague.contest;
 import com.jeffkm.mockleague.common.ApiResponse;
 import com.jeffkm.mockleague.contest.dto.ContestResponse;
 import com.jeffkm.mockleague.contest.dto.CreateContestRequest;
+import com.jeffkm.mockleague.contest.dto.SettlementResponse;
 import com.jeffkm.mockleague.contest.dto.SnapshotResponse;
+import com.jeffkm.mockleague.order.LimitOrderExecutor;
 import jakarta.validation.Valid;
 import java.time.Clock;
 import java.time.LocalDateTime;
+import java.util.Map;
 import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
@@ -49,6 +52,23 @@ public class ContestAdminController {
   @PostMapping("/{contestId}/ranking-snapshots")
   public ApiResponse<SnapshotResponse> snapshot(@PathVariable Long contestId) {
     return ApiResponse.ok(new SnapshotResponse(lifecycleService.snapshotNow(contestId, LocalDateTime.now(clock))));
+  }
+
+  /**
+   * 지정가 정산을 지금 시각 기준으로 바로 돌린다(6주차⑧ P4). 1분마다 도는 스케줄러와 같은 코드다.
+   * 대기 주문을 하나씩 처리하므로 끝날 때까지 기다렸다가 결과별 건수와 걸린 시간을 돌려준다.
+   */
+  @PostMapping("/{contestId}/limit-settlements")
+  public ApiResponse<SettlementResponse> settle(@PathVariable Long contestId) {
+    long started = System.nanoTime();
+    Map<LimitOrderExecutor.Outcome, Integer> counts = lifecycleService.settleNow(contestId, LocalDateTime.now(clock));
+    long elapsedMs = (System.nanoTime() - started) / 1_000_000;
+    return ApiResponse.ok(new SettlementResponse(
+        counts.getOrDefault(LimitOrderExecutor.Outcome.FILLED, 0),
+        counts.getOrDefault(LimitOrderExecutor.Outcome.EXPIRED, 0),
+        counts.getOrDefault(LimitOrderExecutor.Outcome.PENDING, 0),
+        counts.getOrDefault(LimitOrderExecutor.Outcome.SKIPPED, 0),
+        elapsedMs));
   }
 
   /**
