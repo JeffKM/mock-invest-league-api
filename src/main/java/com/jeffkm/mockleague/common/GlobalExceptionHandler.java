@@ -25,8 +25,9 @@ public class GlobalExceptionHandler {
 
   @ExceptionHandler(BusinessException.class)
   public ResponseEntity<ApiResponse<Void>> handleBusiness(BusinessException e) {
-    if (e.errorCode() == ErrorCode.RATE_LIMITED) {
-      // 속도 제한: 몇 초 뒤에 다시 보내면 되는지 알려 준다(토큰은 1초 안에 다시 찬다)
+    if (e.errorCode() == ErrorCode.RATE_LIMITED || e.errorCode() == ErrorCode.SERVER_BUSY) {
+      // 속도 제한(토큰은 1초 안에 다시 찬다)·덜어내기(6주차⑨): 몇 초 뒤에 다시 보내면 되는지 알려 준다.
+      // 재전송하는 클라이언트가 바로 다시 몰려오지 않게 하는 신호다
       return ResponseEntity.status(e.errorCode().status())
           .header(HttpHeaders.RETRY_AFTER, "1")
           .body(ApiResponse.fail(e.errorCode(), e.getMessage()));
