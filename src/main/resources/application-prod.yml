@@ -36,8 +36,10 @@ league:
     # 6주차⑨ P8 덜어내기. 동시에 처리하는 API 요청을 이 수로 묶고, 자리를 max-wait 안에 못 얻으면 503 + Retry-After.
     # 넘치는 요청을 줄 세우면 모두가 늦어진다(12배 부하에서 서버는 다 200 으로 끝냈지만 2초 안에 받은 것은 45%, docs/07 12절).
     # 20 = DB 커넥션 10개 + 캐시로 끝나는 조회 몫. 0 이면 끈다
+    # max-wait 0: 자리가 없으면 바로 거절한다. 500ms 로 기다리게 했더니 기다리는 요청이 톰캣 스레드 200개를 다 쥐어
+    # 줄이 운영체제 접속 대기열로 옮겨 갔고 더 나빠졌다(최고 구간 실패 55% → 97%). 0 에서는 29%, 회복 즉시(docs/07 12절)
     max-concurrent: ${LEAGUE_SHED_MAX_CONCURRENT:20}
-    max-wait: ${LEAGUE_SHED_MAX_WAIT:500ms}
+    max-wait: ${LEAGUE_SHED_MAX_WAIT:0ms}
   warmup:
     # 6주차⑥ 사용자 요청을 받기 전에 자기 자신에게 조회 요청을 보내 JIT 를 미리 돌린다(콜드 스타트). 끝나야 헬스 체크가 UP 이 된다
     enabled: ${LEAGUE_WARMUP:true}

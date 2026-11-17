@@ -17,6 +17,8 @@ import java.util.concurrent.TimeUnit;
  * 넘치는 만큼을 바로 돌려보내면 받은 요청은 제시간에 끝난다.
  *
  * <p>공정한(fair) 세마포어: 먼저 기다린 요청이 먼저 자리를 얻는다. 기다리는 시간의 상한이 maxWait 로 정해진다.
+ * 운영은 maxWait 0(바로 거절)이다. 기다리는 요청도 톰캣 스레드를 쥐므로, 기다림을 두면 스레드 풀이 먼저 차서
+ * 줄이 운영체제 접속 대기열로 옮겨 갈 뿐이었다(500 ms 로 쟀을 때 오히려 더 나빠짐, ROADMAP 30단계).
  */
 public class LoadShedder {
 
