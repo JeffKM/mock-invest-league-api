@@ -59,11 +59,15 @@ snap before
 
 # 3) k6 (워치독으로 시간 제한)
 # k6 HTML 리포트(report.html): 사용자 쪽에서 본 요청 수·지연·실패를 시간 순 그래프로 남긴다
+# 30단계: 맥의 셸은 열 수 있는 파일(소켓) 수가 256 으로 시작한다. 재전송 측정에서 VU 수천 개가 소켓을 열다
+# "too many open files" 로 요청 수만 건이 서버에 가지도 못하고 실패했다(부하 발생기 쪽 한계를 서버 실패로 잘못 읽을 뻔함)
+ulimit -n "$(sysctl -n kern.maxfilesperproc 2>/dev/null || echo 10240)" 2>/dev/null || ulimit -n 10240 2>/dev/null || true
+echo "열 수 있는 파일 수(ulimit -n): $(ulimit -n)"
 START_MS="$(date +%s)000"
 set +e
 (
   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run -e BASE_URL="$BASE" -e ADMIN_TOKEN="$ADMIN_TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" \
+    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 &
   pid=$!
   ( sleep "$WATCHDOG"; kill -9 "$pid" 2>/dev/null ) & wd=$!
@@ -79,5 +83,8 @@ snap after
 curl -s -m 5 "$BASE/actuator/health" > "$OUT/health-after.txt" || true
 echo "k6 종료 코드 $K6_EXIT (99 = 통과 기준 미달, 그 밖의 0 아닌 값 = 실행 실패)" | tee -a "$OUT/rtt-summary.txt"
 [ -f "$OUT/summary.md" ] && cat "$OUT/summary.md" || tail -40 "$OUT/k6.log"
+# 부하 발생기 쪽 실패(서버에 닿지도 않은 요청)를 따로 센다. 0 이 아니면 결과표의 실패율을 서버 탓으로 읽으면 안 된다
+LOCAL_FAIL="$(grep -c 'too many open files' "$OUT/k6.log" || true)"
+echo "부하 발생기 쪽 실패(too many open files): ${LOCAL_FAIL:-0}건"
 echo "k6 리포트: $OUT/report.html"
 echo "Grafana 시간 범위(노트북에서 monitoring/up.sh 를 띄웠다면): http://localhost:3000/d/league?from=$START_MS&to=$END_MS"

@@ -29,7 +29,7 @@ export function errorCode(res) {
 }
 
 /**
- * 측정용 대회 하나를 만들어 시작하고, 사용자 users 명을 참가시킨다(50개씩 동시에).
+ * 측정용 대회 하나를 만들어 시작하고, 사용자 users 명을 참가시킨다(10명씩 동시에).
  * 마지막에 순위 스냅샷을 한 장 찍어 순위 조회가 빈 표가 아니라 실제 users 줄을 읽게 한다.
  */
 export function prepare({ base, admin, users, startsOn, endsOn }) {
@@ -40,10 +40,12 @@ export function prepare({ base, admin, users, startsOn, endsOn }) {
   const contestId = contest.json('data.id');
   must(http.post(`${base}/api/admin/contests/${contestId}/start`, null, adminHeaders), '대회 시작');
 
+  // 10명씩: 같은 대회에 참가 50건을 동시에 보내자 커넥션 3초 대기를 넘겨 503 이 났다(30단계, 쉬는 서버에서도).
+  // 그전에는 k6 가 서버당 6개씩만 보내서 드러나지 않았다. 원인은 P7(가입 몰림)에서 따로 본다
   const ids = [];
-  for (let i = 0; i < users; i += 50) {
+  for (let i = 0; i < users; i += 10) {
     const batch = [];
-    for (let j = i; j < Math.min(i + 50, users); j++) {
+    for (let j = i; j < Math.min(i + 10, users); j++) {
       batch.push(['POST', `${base}/api/users`, JSON.stringify({ nickname: `k6-${run}-${j}` }), { headers: JSON_HEADERS }]);
     }
     const made = http.batch(batch).map((r) => must(r, '사용자 만들기').json('data.id'));

@@ -1,4 +1,4 @@
-// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle
+// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle|retry
 //   steady  기준선: 평소 속도(주문 1 : 조회 3)를 일정하게. 나머지 시나리오를 이것과 비교한다
 //   rush    장 시작 몰림: 평소 → 4배로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
@@ -10,6 +10,9 @@
 //   settle  정산 폭주(P4)·취소 경쟁(P5, 6주차⑧): 준비 때 "지금 가격이면 체결될" 매수 지정가를 사용자마다 LIMITS 개 걸어 둔다.
 //           평소 부하(steady 와 같은 섞음) 중 40초에 관리자 정산 API 를 한 번 불러 수천 건을 한꺼번에 체결시킨다.
 //           그동안 같은 사용자들이 시장가 주문(같은 계좌 잠금을 두고 배치와 경합)과 대기 주문 취소(배치와 같은 주문을 두고 경합)를 한다
+//   retry   재전송 폭주(P8, 6주차⑨): steady 섞음을 평소 → PEAK 배까지 천천히 올렸다 내린다. 클라이언트는 TIMEOUT(기본 2초) 안에
+//           답이 없으면 포기하고 RETRIES 번까지 다시 보낸다(주문은 같은 Idempotency-Key). RETRIES=0 과 번갈아 돌려
+//           "느려질 때 재전송이 부하를 키워 더 느려지는가(되먹임)", "부하가 내려간 뒤 얼마나 빨리 돌아오는가"를 본다
 // league.js(일정한 속도, 매수·조회만)는 비교 기준으로 그대로 둔다.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -29,6 +32,9 @@ const SCALE = Number(__ENV.SCALE || 1);     // 단계 길이 배율. 로컬에�
 const RTT_MS = Number(__ENV.RTT_MS || 0);   // 부하 발생기 ↔ 서버 왕복. 지연 기준에 더한다(러너가 재서 넘긴다)
 const HOT_USERS = Number(__ENV.HOT_USERS || 5);
 const LIMITS = Number(__ENV.LIMITS || 3);         // settle: 사용자마다 걸어 둘 지정가 수
+const PEAK = Number(__ENV.PEAK || 5);              // retry: 최고 배율(평소의 몇 배까지 올릴지)
+const TIMEOUT = __ENV.TIMEOUT || '2s';             // retry: 클라이언트가 기다리는 시간
+const RETRIES = Number(__ENV.RETRIES || 0);         // retry: 시간 초과·503 뒤 다시 보내는 횟수(0 = 재전송 없음)
 const SETTLE_AT = 40;                              // settle: 정산을 부르는 시각(초, SCALE 적용 전)
 const SETTLE_AGAIN = Number(__ENV.SETTLE_AGAIN || 0); // settle: 0 이 아니면 첫 정산 이 초 뒤에 한 번 더(앞 정산이 안 끝났을 때 다음 분 실행이 겹치는 상황)
 const STORM = Number(__ENV.STORM || 30);            // settle: 정산 시작부터 몇 초를 storm 구간으로 볼지
@@ -82,6 +88,17 @@ const SCENARIOS = {
     executor: 'constant-arrival-rate', exec: 'settleMixed', rate: NORMAL, timeUnit: '1s', duration: sec(120),
     preAllocatedVUs: 100, maxVUs: 1500,
   },
+  retry: {
+    executor: 'ramping-arrival-rate', exec: 'retryMixed', startRate: NORMAL, timeUnit: '1s',
+    preAllocatedVUs: 200, maxVUs: 3000,
+    stages: [
+      { target: NORMAL, duration: sec(30) },          // 평소
+      { target: NORMAL * PEAK, duration: sec(90) },   // 천천히 올림: 어디서부터 느려지나
+      { target: NORMAL * PEAK, duration: sec(30) },
+      { target: NORMAL, duration: sec(10) },          // 몰림이 끝남
+      { target: NORMAL, duration: sec(60) },          // 회복: 평소 속도로 돌아왔는데도 느린가
+    ],
+  },
   journey: {
     executor: 'constant-arrival-rate', exec: 'journey', rate: Math.max(1, Math.round(10 * MULT)), timeUnit: '1s',
     duration: sec(120), preAllocatedVUs: 100, maxVUs: 1500,
@@ -115,6 +132,9 @@ const THRESHOLDS = {
   settle: {
     'http_req_duration{phase:before}': [`p(95)<${ms(300)}`],
     'http_req_failed': ['rate<0.01'],
+  },
+  retry: {
+    'http_req_duration{phase:recovery}': [`p(95)<${ms(300)}`],   // 부하가 내려간 뒤에는 평소 기준으로 돌아와야 한다
   },
   journey: {
     'http_req_duration{kind:order}': [`p(95)<${ms(300)}`],
@@ -163,6 +183,8 @@ const ROWS = {
   hot: ['name:POST orders(buy)', 'name:POST orders(sell)', 'name:POST orders(double)', 'name:POST orders(resend)'],
   settle: ['phase:before', 'phase:storm', 'phase:after', 'name:POST orders(market)', 'name:DELETE order(pending)',
     'name:POST limit-settlements', 'kind:order', 'kind:read'],
+  retry: ['phase:normal', 'phase:ramp', 'phase:peak', 'phase:recovery', 'kind:order', 'kind:read', 'attempt:1', 'attempt:2',
+    'attempt:3'],
   journey: ['name:GET me', 'name:GET disclosures', 'name:POST orders(market)', 'name:GET orders', 'name:POST orders(limit)',
     'name:DELETE order', 'name:POST orders(sell)', 'name:GET rankings', 'kind:order', 'kind:read'],
 };
@@ -260,6 +282,10 @@ function phase() {
   if (SCENARIO === 'tick') {
     return elapsed() % 60 < 12 ? 'burst' : 'calm';
   }
+  if (SCENARIO === 'retry') {
+    const t = elapsed();
+    return t < 30 ? 'normal' : t < 120 ? 'ramp' : t < 150 ? 'peak' : t < 160 ? 'down' : 'recovery';
+  }
   if (SCENARIO === 'settle') {
     // 정산이 몇 초 걸릴지 모르므로 STORM 초(기본 30)를 폭주 구간으로 본다. 실제 끝 시각은 정산 응답의 elapsedMs 로 본다
     const t = elapsed();
@@ -329,6 +355,49 @@ export function settleMixed(data) {
     return;
   }
   mixed(data);
+}
+
+const timeouts = new Counter('client_timeouts');      // 클라이언트가 기다리다 포기한 횟수
+const gaveUp = new Counter('client_gave_up');         // 재전송까지 다 써도 답을 못 받은 사용자 동작
+const logical = new Counter('logical_requests');      // 사용자 동작 수(재전송은 세지 않는다). 보낸 요청 수 ÷ 이것 = 부풀림 배율
+
+/**
+ * retry: 요청 하나를 "답이 올 때까지" 보낸다. 시간 초과(status 0)나 503 이면 RETRIES 번까지 바로 다시 보낸다.
+ * 주문은 같은 키로 다시 보낸다. 처음 요청이 서버에서 이미 처리됐으면 같은 주문을 돌려받고, 중복 주문은 생기지 않아야 한다
+ * (같은 키 주문은 계좌당 하나 = 유니크 제약, 돈은 끝난 뒤 불변식 검사로 본다). 사람이 앱에서 "다시 시도"를 누르는 것과 같다.
+ */
+function withRetry(send, kind, name) {
+  logical.add(1, { kind });
+  for (let attempt = 1; attempt <= RETRIES + 1; attempt++) {
+    const res = record(send({ kind, name, phase: phase(), attempt: String(attempt) }));
+    if (res.status === 0) {
+      timeouts.add(1, { kind });
+    } else if (res.status !== 503) {
+      return res;
+    }
+  }
+  gaveUp.add(1, { kind });
+  return null;
+}
+
+/** retry: steady 와 같은 섞음(주문 1 : 조회 3). 모든 요청에 TIMEOUT, 주문은 같은 키로 재전송. */
+export function retryMixed(data) {
+  const user = pick(data.users);
+  const c = data.contestId;
+  const headers = { 'X-User-Id': String(user) };
+  const p = Math.random();
+  if (p < 0.25) {
+    const key = newKey();
+    const body = JSON.stringify(market(pick(TICKERS), 'BUY', 1 + Math.floor(Math.random() * 3)));
+    withRetry((tags) => http.post(`${BASE}/api/contests/${c}/orders`, body, {
+      headers: { ...JSON_HEADERS, ...headers, 'Idempotency-Key': key }, tags, timeout: TIMEOUT,
+    }), 'order', 'POST orders(market)');
+    return;
+  }
+  const path = p < 0.55 ? ['me', 'GET me'] : p < 0.75 ? ['orders', 'GET orders']
+    : p < 0.95 ? ['rankings?limit=20', 'GET rankings'] : ['disclosures?limit=20', 'GET disclosures'];
+  withRetry((tags) => http.get(`${BASE}/api/contests/${c}/${path[0]}`, { headers, tags, timeout: TIMEOUT }),
+    'read', path[1]);
 }
 
 /** tick: 새 틱이 뜨면 계좌·순위를 연다. 주문은 조금. */
