@@ -30,6 +30,8 @@ const RTT_MS = Number(__ENV.RTT_MS || 0);   // 부하 발생기 ↔ 서버 왕�
 const HOT_USERS = Number(__ENV.HOT_USERS || 5);
 const LIMITS = Number(__ENV.LIMITS || 3);         // settle: 사용자마다 걸어 둘 지정가 수
 const SETTLE_AT = 40;                              // settle: 정산을 부르는 시각(초, SCALE 적용 전)
+const SETTLE_AGAIN = Number(__ENV.SETTLE_AGAIN || 0); // settle: 0 이 아니면 첫 정산 이 초 뒤에 한 번 더(앞 정산이 안 끝났을 때 다음 분 실행이 겹치는 상황)
+const STORM = Number(__ENV.STORM || 30);            // settle: 정산 시작부터 몇 초를 storm 구간으로 볼지
 
 // docs/01 5절 가정(주문 30 TPS, 조회 90 TPS)의 MULT 배가 "평소"다
 const ORDER_TPS = 30 * MULT;
@@ -132,10 +134,20 @@ const EXTRA = SCENARIO === 'tick' && ADMIN ? {
     executor: 'shared-iterations', exec: 'runSettlement', iterations: 1, vus: 1, startTime: sec(SETTLE_AT),
     maxDuration: '10m',
   },
+  ...(SETTLE_AGAIN ? {
+    settleAgain: {
+      executor: 'shared-iterations', exec: 'runSettlement', iterations: 1, vus: 1,
+      startTime: sec(SETTLE_AT + SETTLE_AGAIN), maxDuration: '10m',
+    },
+  } : {}),
 } : {};
 
 export const options = {
-  setupTimeout: '10m',
+  setupTimeout: '20m',
+  // http.batch 는 기본으로 한 서버에 6개씩만 동시에 보낸다. 준비에서 50개씩 묶어 보내도 6개씩이라
+  // 왕복 300 ms 인 원격 측정에서 지정가 1만 건 준비가 10분을 넘겼다(29단계) → 묶음 크기만큼 동시에
+  batch: 50,
+  batchPerHost: 50,
   scenarios: { [SCENARIO]: SCENARIOS[SCENARIO], ...EXTRA },
   // 모든 시나리오 공통: 500 류 0건, 끝난 뒤 불변식 검사(돈·주식이 장부와 맞는가) 위반 0건
   thresholds: { server_errors_not_503: ['count==0'], invariant_violations: ['count==0'], ...THRESHOLDS[SCENARIO] },
@@ -249,9 +261,9 @@ function phase() {
     return elapsed() % 60 < 12 ? 'burst' : 'calm';
   }
   if (SCENARIO === 'settle') {
-    // 정산이 몇 초 걸릴지 모르므로 넉넉히 30초를 폭주 구간으로 본다. 실제 끝 시각은 정산 응답의 elapsedMs 로 본다
+    // 정산이 몇 초 걸릴지 모르므로 STORM 초(기본 30)를 폭주 구간으로 본다. 실제 끝 시각은 정산 응답의 elapsedMs 로 본다
     const t = elapsed();
-    return t < SETTLE_AT ? 'before' : t < SETTLE_AT + 30 ? 'storm' : 'after';
+    return t < SETTLE_AT ? 'before' : t < SETTLE_AT + STORM ? 'storm' : 'after';
   }
   return 'all';
 }
