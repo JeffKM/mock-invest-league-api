@@ -3376,10 +3376,41 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 35단계. 다음 할 일
+# 35단계. P9 DB 재부팅 — 앱은 스스로 회복, 끊긴 순간의 500 을 503 으로 (6주차⑭)
+
+## 한 일
+
+- **측정 도구 `deploy/p9-watch.sh`(서버).** 0.5초마다 `/actuator/health`(DB 상태 포함) 코드와 걸린 시간, 끝나면 그동안 앱 로그의 경고·오류를 종류별로 센다. 사용자 API 는 k6 steady 8분(`SCALE=4`)이 본다. 재부팅은 CloudShell 에서 `aws rds reboot-db-instance`(단일 AZ).
+- **1차(11-18 13:59).** 재부팅 명령 13:59:57 → health 503 14:00:05.8 → RDS "shutdown" 06.5 → **health 200 19.8**(커넥션 풀이 스스로 새 연결) → RDS "restarted" 24.7(실제 회복보다 5초 늦게 찍힘). 앱에서 본 장애 약 14초. 실패 2,040(3.5%) = 503 2,030 + **500 10**. 불변식 위반 0.
+  - 503 은 의도대로다: 커넥션을 3초 안에 못 얻으면 503, 그동안 처리 중 20 이 차면 덜어내기가 바로 503.
+  - 500 10건은 DB 가 꺼지는 순간 쿼리 중이던 트랜잭션이었다(`terminating connection due to administrator command`, `I/O error occurred while sending to the backend`). 예외 처리기의 마지막 칸으로 떨어졌다. 원인은 "DB 에 잠깐 닿지 않음"이라 503 + `Retry-After` 가 맞다(500 은 버그처럼 보이고 다시 보내도 되는지 알 수 없다). 주문은 같은 Idempotency-Key 로 다시 보내면 두 번 체결되지 않는다.
+- **첫 수정(`f61eaf0`): 원인 사슬에서 SQLState 08xxx(연결 오류)·57P0x(DB 종료), Hibernate·Spring 의 연결 예외를 찾으면 503.** 2차(14:28)에서도 500 이 10건 그대로였다.
+- **실제 모양을 보고 다시(`66bc735`).** 서버 로그의 스택: `JpaSystemException: Unable to rollback against JDBC Connection` → `TransactionException` → `SQLException: Connection is closed`(SQLState 없음). 원래 오류(57P01)는 롤백 실패에 덮여 사슬에 남지 않는다(Spring 은 "Application exception overridden by rollback exception" 을 로그에만 남긴다). 첫 테스트는 원래 오류가 사슬에 남는다고 짐작해 만들어 실제 모양을 놓쳤다. → "JDBC 연결 위에서 롤백·커밋이 SQL 예외로 실패" = 연결이 이미 끊김 → 503. 테스트를 로그의 실제 모양으로 바꿨다.
+- **3차(14:51): 500 0건.**
+
+  | | 1차 | 2차(첫 수정) | 3차 |
+  |---|---|---|---|
+  | 앱에서 본 장애 | 약 14초 | 약 7초 | 약 7.6초 |
+  | 503 / **500** | 2,030 / 10 | 1,255 / 10 | 1,262 / **0** |
+  | 서버 로그 | 처리되지 않은 예외 10 | 처리되지 않은 예외 10 | DB 연결 끊김으로 503: 9 |
+  | 불변식 위반 / 회복 | 0 / 자동 | 0 / 자동 | 0 / 자동 |
+
+## 왜
+
+- 단일 AZ RDS 는 재부팅·패치·장애 때 몇 초에서 몇십 초 멈춘다. 그동안 앱이 무엇을 돌려주는지(500 이냐 503 이냐), 돌아온 뒤 사람 손 없이 회복하는지, 돈이 어긋나지 않는지를 미리 확인해 둔다.
+
+## 외울 것
+
+- **Q. DB 가 잠깐 죽으면 앱은 무엇을 돌려줘야 하나?** 503 + `Retry-After`. "지금은 안 되니 잠시 뒤 다시"이고, 클라이언트 잘못(4xx)도 서버 버그(500)도 아니다. 쓰기 요청은 멱등 키가 있어야 안전하게 다시 보낼 수 있다.
+- **Q. 커넥션 풀은 DB 재시작 뒤 어떻게 회복하나?** Hikari 는 끊긴 연결을 "broken"으로 표시해 버리고, 다음 요청 때 새 연결을 맺는다. DB 가 돌아오면 첫 요청부터 성공한다. 그 사이 요청은 `connection-timeout`(3초) 동안 기다리다 실패한다.
+- **Q. 예외 처리 규칙은 어떻게 검증하나?** 짐작한 모양이 아니라 실제로 난 예외(로그의 스택)로 테스트를 만든다. 롤백 실패처럼 원래 원인을 덮어쓰는 경로가 있다.
+
+---
+
+# 36단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). → P9(RDS 재부팅) → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). P9 는 35단계(앱에서 본 장애 7~14초, 자동 회복, 500 → 503). → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교(선택).** 30단계의 "덜어내기 없음" 실행에는 스왑 GC 멈춤이 끼어 있었다. 메모리를 바로잡은 지금 같은 조건(12배, 덜어내기 끔·켬)을 한 번씩 다시 재면 덜어내기만의 효과를 깨끗하게 볼 수 있다. 다만 덜어내기 없이 12배면 스레드 50개 뒤 접속 대기열에서 줄이 서는 것은 같다.
@@ -3444,6 +3475,10 @@ export AWS_PAGER=""                                            # (CloudShell) aw
 aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteLatency --dimensions Name=DBInstanceIdentifier,Value=league --start-time <UTC> --end-time <UTC> --period 60 --statistics Maximum --output text   # (CloudShell) RDS 지표 1분 단위
 ./p10-deploy.sh 60                                             # (서버) P10 부하 중 같은 이미지로 배포, 끊긴 구간·컨테이너 단계(k6 steady SCALE=3 과 같이)
 docker logs league-app 2>&1 | grep -E "Started MockLeague|\[cds\]"   # (서버) 기동 시간, 클래스 공유 경고
+./p9-watch.sh 600                                              # (서버) P9 health 0.5초마다 + 앱 로그 경고·오류 종류별(k6 steady SCALE=4 와 같이)
+aws rds reboot-db-instance --db-instance-identifier league --query 'DBInstance.DBInstanceStatus' --output text   # (CloudShell) RDS 재부팅
+aws rds describe-events --source-type db-instance --source-identifier league --duration 30 --query 'Events[].[Date,Message]' --output text   # (CloudShell) RDS 가 남긴 종료·재시작 시각
+docker logs league-app --since 20m 2>&1 | grep -A80 "처리되지 않은 예외" | grep -E "Exception|Caused by" | head   # (서버) 500 의 실제 원인 사슬
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기
