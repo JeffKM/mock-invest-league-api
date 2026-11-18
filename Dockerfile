@@ -6,7 +6,8 @@ FROM eclipse-temurin:17-jre-alpine AS extract
 WORKDIR /work
 ARG JAR=build/libs/mock-invest-league-api-0.0.1-SNAPSHOT.jar
 COPY ${JAR} app.jar
-RUN java -Djarmode=tools -jar app.jar extract --layers --launcher --destination extracted
+# 6주차⑬ P10: --launcher(JarLauncher 로 띄우는 풀린 폴더) 대신 jar + lib/ 로 푼다. 클래스 공유(CDS)는 jar 에서 읽은 클래스만 저장한다
+RUN java -Djarmode=tools -jar app.jar extract --layers --destination extracted
 
 # 2단계: 실행 이미지. 바뀌지 않는 계층부터 복사한다 → 코드만 고치면 마지막 계층(수백 KB)만 새로 만들고 올린다
 FROM eclipse-temurin:17-jre-alpine
@@ -16,6 +17,18 @@ COPY --from=extract /work/extracted/dependencies/ ./
 COPY --from=extract /work/extracted/spring-boot-loader/ ./
 COPY --from=extract /work/extracted/snapshot-dependencies/ ./
 COPY --from=extract /work/extracted/application/ ./
+# 6주차⑬ P10 클래스 공유 저장(AppCDS). 트래픽 중 배포하면 새 앱이 뜨는 20초 동안 끊겼다. 그 시간 대부분은 클래스를 읽고 초기화하는 일이다.
+# 이미지를 만들 때 한 번 띄워 컨텍스트가 준비되는 순간 끝내고(spring.context.exit=onRefresh), 그동안 읽은 클래스를 app.jsa 에 저장한다.
+# 실행할 때 그 파일을 쓰면 클래스를 다시 읽고 검증하는 일을 건너뛴다. CI 에는 DB 가 없으므로 이 한 번은 DB 에 붙지 않게 한다
+# (Flyway 끔, 스키마 검사(ddl-auto validate) 끔, Hibernate 가 DB 메타데이터를 묻지 않게). 운영 기동은 그대로 검사한다. 비밀값 자리는 이 줄에서만 쓰는 가짜 값이다(이미지 ENV 에 남지 않는다)
+RUN SPRING_PROFILES_ACTIVE=prod DB_URL=jdbc:postgresql://localhost:5432/cds DB_USERNAME=cds DB_PASSWORD=cds ADMIN_TOKEN=cds-training \
+    java -XX:ArchiveClassesAtExit=app.jsa -Dspring.context.exit=onRefresh \
+      -Dspring.flyway.enabled=false -Dspring.jpa.hibernate.ddl-auto=none \
+      -Dspring.jpa.properties.hibernate.boot.allow_jdbc_metadata_access=false \
+      -Dspring.jpa.properties.hibernate.dialect=org.hibernate.dialect.PostgreSQLDialect \
+      -jar app.jar > /tmp/cds-training.log 2>&1; \
+    if grep -q 'Application run failed' /tmp/cds-training.log; then tail -20 /tmp/cds-training.log; exit 1; fi; \
+    rm /tmp/cds-training.log; ls -l app.jsa
 USER app
 # 힙은 컨테이너 메모리 한도의 40%(700MB → 약 280MB). 시간대는 로그용(업무 날짜는 코드가 Asia/Seoul 을 직접 쓴다)
 # 6주차⑩ P7: 처음엔 75%(525MB)였다. 힙 밖(클래스·코드 캐시 약 188MB)과 스레드 200개 몫을 더하면 앱이 760MB 까지 커졌다.
@@ -26,4 +39,4 @@ ENV JAVA_TOOL_OPTIONS="-XX:MaxRAMPercentage=40 -Duser.timezone=Asia/Seoul"
 EXPOSE 8080
 HEALTHCHECK --interval=10s --timeout=3s --start-period=60s --retries=3 \
   CMD wget -qO- http://localhost:8080/actuator/health | grep -q '"status":"UP"' || exit 1
-ENTRYPOINT ["java", "org.springframework.boot.loader.launch.JarLauncher"]
+ENTRYPOINT ["java", "-XX:SharedArchiveFile=app.jsa", "-jar", "app.jar"]
