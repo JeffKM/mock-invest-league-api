@@ -10,7 +10,7 @@ services:
     ports:
       - "${HOST_PORT:-80}:8080"  # 바깥에서는 http://<EC2 주소>/ 로 들어온다(로컬 리허설은 HOST_PORT 로 바꾼다)
     restart: unless-stopped  # 서버가 재부팅되거나 앱이 죽으면 다시 띄운다
-    mem_limit: 700m          # t3.micro(1GB) 에서 OS 몫을 남긴다. 힙은 이 값의 75%(Dockerfile 의 MaxRAMPercentage)
+    mem_limit: 700m          # t3.micro(1GB) 에서 OS 몫을 남긴다. 힙은 이 값의 40%(Dockerfile 의 MaxRAMPercentage, P7 에서 75 → 40)
     stop_grace_period: 30s   # graceful shutdown(20초)이 끝날 때까지 기다린 뒤에 강제 종료
     logging:
       driver: json-file
