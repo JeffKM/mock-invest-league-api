@@ -15,6 +15,8 @@ LABEL="${4:-$(hostname -s)}"
 : "${ADMIN_TOKEN:?ADMIN_TOKEN 환경 변수가 없습니다(read -s ADMIN_TOKEN; export ADMIN_TOKEN)}"
 K6="${K6:-$(command -v k6 || echo "$HOME/.local/bin/k6")}"
 WATCHDOG="${WATCHDOG:-1200}"   # k6 가 이 초 안에 안 끝나면 강제 종료(좀비 방지)
+# soak 는 30분 넘게 돈다. 처음엔 20분 워치독이 30분 실행을 19분에 죽였다(33단계) → 실행 시간 + 15분
+[ "${SCENARIO:-}" = soak ] && WATCHDOG="${WATCHDOG_SOAK:-$(( ${SOAK_MIN:-30} * 60 + 900 ))}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 SCENARIO="${SCENARIO:-}"
 SCRIPT="$ROOT/scripts/k6/league.js"; [ -n "$SCENARIO" ] && SCRIPT="$ROOT/scripts/k6/realistic.js"
@@ -67,7 +69,7 @@ START_MS="$(date +%s)000"
 set +e
 (
   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run -e BASE_URL="$BASE" -e ADMIN_TOKEN="$ADMIN_TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e RUSH="${RUSH:-4}" -e RUSH_RAMP="${RUSH_RAMP:-10}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
+    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e RUSH="${RUSH:-4}" -e RUSH_RAMP="${RUSH_RAMP:-10}" -e SOAK_MIN="${SOAK_MIN:-30}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 &
   pid=$!
   ( sleep "$WATCHDOG"; kill -9 "$pid" 2>/dev/null ) & wd=$!

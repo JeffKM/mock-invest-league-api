@@ -3291,10 +3291,47 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 33단계. 다음 할 일
+# 33단계. N3 장시간 부하(soak) — 누수는 없고, 가끔 DB 가 15~26초 멈춘다 (6주차⑫)
+
+## 한 일
+
+- **k6 `soak`.** steady 와 같은 섞음·속도(초당 120건)를 `SOAK_MIN` 분(기본 30). 10분마다 구간 태그(w0·w1·w2)를 달아 뒤 구간이 느려지는지 본다.
+- **겪은 문제: 첫 실행이 19분에 죽었다(`Killed: 9`).** 원격 러너의 워치독 기본값이 20분이었다. `soak` 이면 실행 시간 + 15분으로(`load-test-remote.sh`).
+- **결과(세 번, 11-18 17:54·18:39·19:13).**
+
+  | | 1차(19분까지) | 2차 | 3차 |
+  |---|---|---|---|
+  | 구간별 p50(w0·w1·w2) | - | 277 · 277 · 277 ms | 277 · 276 · 277 ms |
+  | 구간별 실패 | - | 0.11% · **4.58%** · 0.08% | 0.43% · 0.08% · 0.11% |
+  | 큰 멈춤(DB 커넥션 10개가 모두 묶임) | **15초**(부하 15분 뒤) | **26초**(14분 뒤) | 없음 |
+  | 503 | 1,652 | 3,428 | 449 |
+
+- **누수·점진적 악화는 없다.** 세 번 모두 GC 뒤 살아남는 힙 49~61MB, Full GC 0번, 열린 파일 224, DB 커넥션 10, 스레드 약 51, 앱 RSS 411MB·스왑 0 이 처음부터 끝까지 평평했다. 주문 조회 평균도 5~7 ms 그대로(30분에 주문 약 5만 건).
+- **큰 멈춤은 원인을 못 정했다.** 그 순간 앱 CPU 10%·GC 0.005초, RDS CPU 17%·CPU 크레딧 가득(283)·디스크 gp3 3,000 IOPS(버스트 크레딧 없음)·쓰기 지연 0.85 ms·디스크 대기열 0.06. RDS 이벤트 없음, 자동 백업 시간대(16:27~16:57 UTC)도 아님. 둘 다 한가한데 커넥션만 15~26초 응답을 기다렸다.
+- **잡을 도구 `deploy/stall-watch.sh`.** 1초마다 DB 세션 상태와 "잠금을 쥔 쪽·autovacuum 이 하는 일"(`sql/stall.sql`), 앱 컨테이너의 TCP 재전송·시간 초과를 남긴다. 3차에는 큰 멈춤이 없었고 작은 멈춤(503 50~160건) 세 번이 잡혔다.
+  - 10:18:29 UTC: autovacuum 의 `ANALYZE orders` + WAL 디스크 기록 대기(`IO:WALSync`) + 5초 사이 재전송 +43.
+  - 10:22:02: 앱 세션 9개가 모두 `Client:ClientRead`(DB 는 끝냈고 앱의 다음 명령을 기다림) + TCP 시간 초과 +4 → 응답이 앱에 늦게 닿았거나 앱이 멈춤. 네트워크 쪽에 무게.
+  - 10:42:46: `ANALYZE cash_ledger` + WAL 기록 대기 7.
+  - 그 밖에 매분 0~2초에 WAL 기록 대기(`LWLock:WALWrite`)와 재전송 증가 = 25단계의 매분 튐과 같은 자리.
+- **남은 후보.** autovacuum 통계 갱신과 WAL 기록이 겹치는 순간, 또는 EC2 ↔ RDS 네트워크. 큰 멈춤이 부하 시작 14~15분 뒤(주문 2~3만 건이 쌓여 `orders` 자동 ANALYZE 가 도는 무렵)에 두 번 온 것은 앞쪽과 맞지만, 3차의 ANALYZE 는 1초도 안 걸렸다. 앞으로 긴 측정에는 `stall-watch.sh` 를 같이 켠다.
+
+## 왜
+
+- 짧은 측정(2~6분)으로는 "쌓여서 생기는 문제"(메모리 누수, 커넥션 누수, 표가 커져 느려지는 쿼리, 자동 통계 갱신)를 볼 수 없다. 31단계에서 힙·스레드를 줄였으니 오래 돌려도 새는 곳이 없는지 확인해야 했다.
+
+## 외울 것
+
+- **Q. soak 테스트에서 무엇을 보나?** 앞 구간과 뒤 구간의 지연(같으면 정상), GC 뒤 살아남는 힙(계속 오르면 누수), 열린 파일·커넥션·스레드 수(계속 오르면 자원 누수), Full GC 횟수·길이. 평균이 아니라 추세를 본다.
+- **Q. `Client:ClientRead` 대기는 무슨 뜻인가?** DB 세션이 클라이언트(앱)의 다음 명령을 기다린다는 뜻이다. 트랜잭션 안에서 이 상태가 몰리면 DB 가 아니라 앱 쪽(또는 그 사이 네트워크)이 늦은 것이다.
+- **Q. `LWLock:WALWrite`·`IO:WALSync` 는?** 커밋은 WAL 을 디스크에 써야 끝난다. 한 세션이 쓰는 동안 다른 세션들은 `WALWrite` 로 기다리고, 쓰는 세션은 `WALSync`(fsync)다. 이것이 길어지면 모든 쓰기 트랜잭션이 함께 멈춘다.
+- **Q. 원인을 못 찾은 문제는 어떻게 다루나?** 지운 후보(앱 CPU·GC, RDS CPU·크레딧·디스크·백업)와 남은 후보를 적고, 다음에 일어날 때 잡을 장치를 켜 둔다. 재현이 드문 문제를 무작정 반복 실행으로 쫓지 않는다.
+
+---
+
+# 34단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. → P9·P10·P11·N3. N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). → P10(트래픽 중 배포) → P9(RDS 재부팅) → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교(선택).** 30단계의 "덜어내기 없음" 실행에는 스왑 GC 멈춤이 끼어 있었다. 메모리를 바로잡은 지금 같은 조건(12배, 덜어내기 끔·켬)을 한 번씩 다시 재면 덜어내기만의 효과를 깨끗하게 볼 수 있다. 다만 덜어내기 없이 12배면 스레드 50개 뒤 접속 대기열에서 줄이 서는 것은 같다.
@@ -3353,6 +3390,10 @@ sudo nsenter -t $P -n nstat -az | grep -iE 'listen|reqq|cookie' # (서버) 컨�
 sudo nsenter -t $P -n ss -ltn                                  # (서버) 8080 의 접속 대기열 크기(Send-Q)
 sudo dmesg -T | grep -i 'conntrack.*full' | tail                # (서버) 연결 추적 표가 차서 버린 기록
 sudo sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max   # (서버) 연결 추적 표 사용량·크기
+SCENARIO=soak SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 30m n3-soak   # N3 장시간(SOAK_MIN 분, 기본 30)
+./stall-watch.sh 2400                                          # (서버) 1초마다 DB 세션·잠금 쥔 쪽·autovacuum, TCP 재전송. 긴 측정과 같이
+export AWS_PAGER=""                                            # (CloudShell) aws 출력이 페이지 화면(:)에서 멈추지 않게
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteLatency --dimensions Name=DBInstanceIdentifier,Value=league --start-time <UTC> --end-time <UTC> --period 60 --statistics Maximum --output text   # (CloudShell) RDS 지표 1분 단위
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기

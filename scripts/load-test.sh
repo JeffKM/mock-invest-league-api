@@ -74,7 +74,7 @@ echo "열 수 있는 파일 수(ulimit -n): $(ulimit -n)"
 START_MS="$(date +%s)000"
 set +e
 ( K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run --quiet -e BASE_URL="http://localhost:$PORT" -e ADMIN_TOKEN="$TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e RUSH="${RUSH:-4}" -e RUSH_RAMP="${RUSH_RAMP:-10}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
+    -e USERS="${USERS:-1000}" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e RUSH="${RUSH:-4}" -e RUSH_RAMP="${RUSH_RAMP:-10}" -e SOAK_MIN="${SOAK_MIN:-30}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 & pid=$!
   ( sleep 1200; kill -9 $pid 2>/dev/null ) & wd=$!
   wait $pid; code=$?; kill $wd 2>/dev/null; exit $code )

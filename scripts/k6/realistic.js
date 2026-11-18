@@ -1,4 +1,4 @@
-// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle|retry
+// 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle|retry|soak
 //   steady  기준선: 평소 속도(주문 1 : 조회 3)를 일정하게. 나머지 시나리오를 이것과 비교한다
 //   rush    장 시작 몰림: 평소 → RUSH 배(기본 4)로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
@@ -13,6 +13,8 @@
 //   retry   재전송 폭주(P8, 6주차⑨): steady 섞음을 평소 → PEAK 배까지 천천히 올렸다 내린다. 클라이언트는 TIMEOUT(기본 2초) 안에
 //           답이 없으면 포기하고 RETRIES 번까지 다시 보낸다(주문은 같은 Idempotency-Key). RETRIES=0 과 번갈아 돌려
 //           "느려질 때 재전송이 부하를 키워 더 느려지는가(되먹임)", "부하가 내려간 뒤 얼마나 빨리 돌아오는가"를 본다
+//   soak    장시간(N3, 6주차⑫): steady 와 같은 섞음·속도를 SOAK_MIN 분(기본 30). 10분마다 구간(w0·w1·w2…)을 나눠 지연을 따로 센다.
+//           뒤 구간이 앞 구간보다 느려지면 무언가 쌓이고 있다(메모리·커넥션·테이블 크기). 서버 쪽은 Prometheus 와 mem-watch.sh 로 본다
 // league.js(일정한 속도, 매수·조회만)는 비교 기준으로 그대로 둔다.
 import http from 'k6/http';
 import { check, sleep } from 'k6';
@@ -36,6 +38,7 @@ const PEAK = Number(__ENV.PEAK || 5);              // retry: 최고 배율(평�
 // rush: 몰림 배율과 오르는 시간(초). 처음엔 4배·10초로 고정이었다. 실제 장 시작은 한순간에 뛴다 → RUSH_RAMP=1 로 계단처럼(32단계)
 const RUSH = Number(__ENV.RUSH || 4);
 const RUSH_RAMP = Number(__ENV.RUSH_RAMP || 10);
+const SOAK_MIN = Number(__ENV.SOAK_MIN || 30);       // soak: 몇 분 돌릴지. 10분마다 구간 태그
 const TIMEOUT = __ENV.TIMEOUT || '2s';             // retry: 클라이언트가 기다리는 시간
 const RETRIES = Number(__ENV.RETRIES || 0);         // retry: 시간 초과·503 뒤 다시 보내는 횟수(0 = 재전송 없음)
 const SETTLE_AT = 40;                              // settle: 정산을 부르는 시각(초, SCALE 적용 전)
@@ -60,6 +63,10 @@ const idemMismatch = new Counter('idempotency_mismatch');      // 같은 키인�
 const SCENARIOS = {
   steady: {
     executor: 'constant-arrival-rate', exec: 'mixed', rate: NORMAL, timeUnit: '1s', duration: sec(120),
+    preAllocatedVUs: 100, maxVUs: 1500,
+  },
+  soak: {
+    executor: 'constant-arrival-rate', exec: 'mixed', rate: NORMAL, timeUnit: '1s', duration: `${SOAK_MIN}m`,
     preAllocatedVUs: 100, maxVUs: 1500,
   },
   rush: {
@@ -114,6 +121,11 @@ if (!SCENARIOS[SCENARIO]) {
 // 통과 기준. 지연 기준에는 왕복 시간(RTT_MS)을 더한다
 const THRESHOLDS = {
   steady: {
+    'http_req_duration{kind:order}': [`p(95)<${ms(300)}`],
+    'http_req_duration{kind:read}': [`p(95)<${ms(200)}`],
+    'http_req_failed': ['rate<0.01'],
+  },
+  soak: {
     'http_req_duration{kind:order}': [`p(95)<${ms(300)}`],
     'http_req_duration{kind:read}': [`p(95)<${ms(200)}`],
     'http_req_failed': ['rate<0.01'],
@@ -182,6 +194,7 @@ const ROWS = {
   steady: ['name:POST orders(market)', 'name:GET me', 'name:GET orders', 'name:GET rankings', 'name:GET disclosures',
     'kind:order', 'kind:read'],
   rush: ['phase:before', 'phase:peak', 'phase:after', 'kind:order', 'kind:read'],
+  soak: [...Array(Math.ceil(SOAK_MIN / 10)).keys()].map((i) => `phase:w${i}`).concat(['kind:order', 'kind:read']),
   tick: ['phase:burst', 'phase:calm', 'kind:order', 'kind:read'],
   hot: ['name:POST orders(buy)', 'name:POST orders(sell)', 'name:POST orders(double)', 'name:POST orders(resend)'],
   settle: ['phase:before', 'phase:storm', 'phase:after', 'name:POST orders(market)', 'name:DELETE order(pending)',
@@ -281,6 +294,9 @@ function phase() {
   if (SCENARIO === 'rush') {
     const t = elapsed();
     return t < 30 ? 'before' : t < 30 + RUSH_RAMP * 2 + 30 + 10 ? 'peak' : 'after';   // 내려온 뒤 10초까지 peak(밀린 일)
+  }
+  if (SCENARIO === 'soak') {
+    return `w${Math.floor(elapsed() / 600)}`;   // 10분 구간
   }
   if (SCENARIO === 'tick') {
     return elapsed() % 60 < 12 ? 'burst' : 'calm';
