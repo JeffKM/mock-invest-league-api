@@ -3407,14 +3407,62 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 36단계. 다음 할 일
+# 36단계. P11 CPU 크레딧 소진 — 평소 부하도 기준선을 넘어, 한 번 밀리면 못 돌아온다 (6주차⑮)
+
+## 한 일
+
+- **크레딧을 일부러 다 씀.** t3.micro 는 CPU 크레딧으로 돈다(시간당 12 적립, 최대 288, 크레딧 1 = vCPU 하나를 1분 100%). 다 쓰면 CPU 가 기준선(인스턴스 전체 10%)으로 묶인다(standard 모드). 서버에서 CPU 를 태우는 컨테이너를 띄워 2시간 반 만에 잔액을 0 으로 만들었다.
+
+  ```bash
+  docker run -d --rm --name burn --cpus 2 alpine sh -c 'yes >/dev/null & yes >/dev/null & sleep 12000'
+  docker stop burn            # 잔액이 10 아래로 내려가면(CloudShell 로 확인)
+  ```
+
+  잔액은 5분마다 9씩 줄었다(시간당 108 = 2 vCPU × 60 − 적립 12). 18:00 UTC 구간은 burn 이 100% 를 원하는데도 CloudWatch `CPUUtilization` 이 **정확히 10.0%** — 기준선에 묶인 것을 확인했다.
+- **잔액 0 에서 측정(11-18 18:08~18:17 UTC).** steady → rush 4배를 이어서, 서버는 `stall-watch.sh 900` 을 같이. 측정 내내 잔액 0.07~0.48, CPU 13~22%(쉬는 사이 쌓인 0.3~0.4 크레딧을 바로 쓴 만큼 기준선을 조금 넘음).
+
+  | | 크레딧 있음 | 크레딧 0 |
+  |---|---|---|
+  | steady 실패(전부 503) | 0.14~0.19%(64건) | **14.3%(2,048건)** |
+  | steady p95 | 약 300 ms | 808 ms(조회) / 1,046 ms(주문) |
+  | rush 4배 몰리기 전 | 0% | 0.44% |
+  | rush 4배 정점 | 1.98% | **25.0%** |
+  | rush 4배 몰림 뒤(평소 부하) | **0%** | **48.8%**, p50 482 ms |
+  | 불변식 위반 / 503 아닌 오류 | 0 / 0 | 0 / 0 |
+
+- **10초 단위로 보면(Prometheus).**
+  - steady: 처음 70초(18:09:20~18:10:30)는 초당 120건을 503 없이 처리. 그 뒤 CPU 가 43 → 73% 로 오르며 503 초당 44~55건이 부하가 끝날 때까지 이어졌다.
+  - rush: 정점 초당 470~480건을 처음 30초는 버텼다. 18:16:10 부터 CPU 100%, 503 초당 184건. **평소 부하로 돌아와도 회복하지 못했다**(크레딧이 있을 땐 몰림 뒤 0%).
+- **왜 무너지나.** 크레딧이 있을 때 steady(초당 120건)의 CPU 는 **11~14%** 다. 평소 부하가 이미 기준선 10% 를 넘는다. 쉬는 몇 분 사이 쌓인 아주 적은 크레딧으로 잠깐 버티다가, 그걸 다 쓰면 처리 속도 < 들어오는 속도가 된다. 그때부터 밀린 요청이 CPU 를 더 쓰고(대기·재연결·503 응답), 부하가 원래대로 줄어도 빠져나오지 못한다(준안정 장애).
+- **DB 는 아니다(`stall-watch.sh`).** DB 멈춤은 없었다. 잠금 대기는 18:16:39 한 번뿐이었는데, 잠금을 쥔 쪽이 앱의 `idle in transaction` 이었다. 앱이 CPU 를 못 받아 트랜잭션을 쥔 채 멈춰 있었다는 뜻이다. TCP 재전송은 18:10:27~18:11:05 에 몰렸지만 503 구간과 정확히 겹치고 시간 초과(`TCPTimeouts`)는 늘지 않았다 → 원인이 아니라 결과.
+- **실제 대회에서 바닥날까.** 평소 부하(CPU 약 12%)의 순소모는 시간당 약 2.4(사용 14.4 − 적립 12). 가득 찬 288 이면 120시간을 버틴다. 장 시작 몰림(4배 30초)도 몇 크레딧이다. 바닥나는 경우는 고부하가 몇 시간 이어질 때다(4배를 계속이면 시간당 약 48 순소모 → 6시간).
+- **대응(코드가 아니라 운영).**
+  - 크레딧 잔액 경보: CloudWatch `CPUCreditBalance < 50` 이면 알림(평소 소모라면 20시간 앞서 알 수 있다).
+  - 바닥나면 unlimited 모드로 돌리는 것이 비상 수단(기준선 초과분 과금, vCPU 시간당 0.05달러 안팎). 지금 계정은 Free 플랜이라 켜 두지는 않는다.
+  - 덜어내기는 이 상황에서도 제 역할을 했다. 실패가 전부 503 + `Retry-After` 였고 불변식 위반·500 은 0 이었다. 다만 CPU 자체가 모자라면 덜어내기는 회복을 만들지 못한다.
+
+## 왜
+
+- 지연이 튈 때 "코드가 느린가, 기계가 묶였나"를 구분해야 고칠 곳을 고른다. t3 는 평소엔 2 vCPU 처럼 돌다가 크레딧이 떨어지면 조용히 10% 로 묶인다. 앱 지표만 보면 코드 문제로 착각하기 쉽다.
+
+## 외울 것
+
+- **Q. t3 버스트 크레딧은?** 기준선(t3.micro 는 인스턴스 전체 10%)보다 많이 쓰면 크레딧을 쓰고, 덜 쓰면 쌓는다. standard 모드에서 잔액이 0 이면 기준선으로 묶이고, unlimited 모드면 넘친 만큼 돈을 내고 계속 쓴다.
+- **Q. 크레딧이 바닥난 걸 어떻게 아나?** CloudWatch `CPUCreditBalance`(잔액)와 `CPUUtilization`(하이퍼바이저가 본 사용률). 서버 안에서는 `vmstat` 의 `st`(steal)가 오른다. 앱의 CPU 사용률(JVM 이 보는 값)은 묶인 상태를 직접 보여 주지 않는다.
+- **Q. 준안정 장애(metastable failure)는?** 처리량이 들어오는 양보다 잠깐 낮아져 밀리기 시작하면, 밀린 일 자체가 부하를 키워 원래 부하로 돌아와도 회복하지 못하는 상태. 원인(크레딧 소진)이 사라지거나 부하를 크게 줄여야 빠져나온다.
+- **Q. 이 서버의 여유는?** 평소 부하가 이미 기준선 위라, 크레딧이 버팀목이다. 크레딧을 "여유 용량"으로 보고 잔액을 경보로 지킨다.
+
+---
+
+# 37단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). P9 는 35단계(앱에서 본 장애 7~14초, 자동 회복, 500 → 503). → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). P9 는 35단계(앱에서 본 장애 7~14초, 자동 회복, 500 → 503). P11 은 36단계(크레딧 0 이면 평소 부하도 기준선을 넘어 무너지고 못 돌아옴 → 잔액 경보). 이로써 P1~P11 을 모두 쟀다. N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교(선택).** 30단계의 "덜어내기 없음" 실행에는 스왑 GC 멈춤이 끼어 있었다. 메모리를 바로잡은 지금 같은 조건(12배, 덜어내기 끔·켬)을 한 번씩 다시 재면 덜어내기만의 효과를 깨끗하게 볼 수 있다. 다만 덜어내기 없이 12배면 스레드 50개 뒤 접속 대기열에서 줄이 서는 것은 같다.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
+- **크레딧 잔액 경보(36단계).** CloudWatch 경보 `CPUCreditBalance < 50`(5분 평균, 2번 연속) → 메일 알림. 만들면 SNS 구독 확인 메일이 온다.
 - **문서.** 저장소 README 에 사례 요약. 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
 
 ---
@@ -3479,6 +3527,9 @@ docker logs league-app 2>&1 | grep -E "Started MockLeague|\[cds\]"   # (서버) 
 aws rds reboot-db-instance --db-instance-identifier league --query 'DBInstance.DBInstanceStatus' --output text   # (CloudShell) RDS 재부팅
 aws rds describe-events --source-type db-instance --source-identifier league --duration 30 --query 'Events[].[Date,Message]' --output text   # (CloudShell) RDS 가 남긴 종료·재시작 시각
 docker logs league-app --since 20m 2>&1 | grep -A80 "처리되지 않은 예외" | grep -E "Exception|Caused by" | head   # (서버) 500 의 실제 원인 사슬
+docker run -d --rm --name burn --cpus 2 alpine sh -c 'yes >/dev/null & yes >/dev/null & sleep 12000'   # (서버) P11 CPU 크레딧을 일부러 소진(시간당 약 108), 끝나면 docker stop burn
+M="--namespace AWS/EC2 --metric-name CPUCreditBalance"         # (CloudShell) 크레딧 잔액. D=Name=InstanceId,Value=<인스턴스 id>, A="--start-time … --end-time … --period 300 --statistics Minimum"
+aws cloudwatch get-metric-statistics $M --dimensions $D $A --output text | sort -k3   # (CloudShell) 위 변수로 잔액(metric-name 을 CPUUtilization 으로 바꾸면 사용률)
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기
