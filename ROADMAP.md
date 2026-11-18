@@ -3219,10 +3219,55 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 32단계. 다음 할 일
+# 32단계. P2 장 시작 몰림 → 커널의 연결 추적 표가 찼다 (6주차⑪)
+
+## 한 일
+
+- **시나리오 손질.** `rush` 는 4배·10초에 걸쳐 오르기로 고정이었다. 실제 장 시작은 한순간에 뛰므로 `RUSH`(배율)·`RUSH_RAMP`(오르는 초)를 받게 했다(기본값은 예전 그대로). 운영 설정(덜어내기 20, 힙 40%, 스레드 50)에서 세 번(11-18 15:10~15:21):
+
+  | | r4(4배, 10초에) | r8(8배, 1초에) | r12(12배, 1초에) |
+  |---|---|---|---|
+  | 정점 구간 실패 | 1.98%(503 427) | 3.86%(503 1,166) | 22.2%(503 9,118) |
+  | 몰림 뒤 구간 | 0% | 0.22% | 0% |
+  | 연결 맺기 p99 / 최대 | 273 ms / 311 ms | 285 ms / 639 ms | **9.3초 / 28.6초** |
+  | 응답 최대 | 4.8초 | 5.5초 | **59.5초** |
+  | 앱 스왑 | 0 | 0 | 0 |
+
+- **r12 의 수십 초는 앱 밖이었다.** 그때 서버는 동시 처리 20, 톰캣 스레드 22, GC 0.17초. 길었던 것은 연결 맺기(`http_req_connecting`). 1초·3초·7초·15초 간격으로 다시 보내는 TCP 재시도 간격과 맞았다.
+- **원인 1: 톰캣 접속 대기열 100.** 컨테이너 안 커널 카운터(`nsenter -t <앱 pid> -n nstat`): SYN 쿠키 13,733, 그중 실패 13,457, 버린 연결 173. 대기열(`ss -ltn` 의 Send-Q)이 톰캣 기본값 100 이었다. → `server.tomcat.accept-count` 1024. 그래도 r12c 는 연결 최대 29.7초로 그대로였고, 이번엔 앱 쪽 카운터가 0 이었다 = 버린 곳이 앱 앞이다.
+- **원인 2: 서버의 연결 추적 표(conntrack) 7,680칸이 가득 참.** `dmesg`: `nf_conntrack: table full, dropping packet`. Docker 는 80 → 컨테이너 8080 으로 주소를 바꿔 넘기므로 커널이 연결마다 한 칸을 쓴다. 끊긴 연결도 TIME_WAIT 로 120초 남는다. 그리고 **톰캣은 503 을 보내면 연결을 닫는다**(`Http11Processor.statusDropsConnection`: 400·408·411·413·414·500·501·503). 덜어내기 503 이 초당 수백 건이면 클라이언트는 그만큼 새 연결을 맺고, 120초 동안 표에 쌓여 7,680칸이 찼다. 표가 차면 커널이 새 SYN 을 조용히 버린다.
+- **해결: 표 65,536칸(가득 차도 약 20MB), TIME_WAIT 30초.** 먼저 `sysctl -w` 로 r12d:
+
+  | 12배를 1초에 | r12c(표 7,680) | r12d(표 65,536) |
+  |---|---|---|
+  | 연결 맺기 p99 / 최대 | 16.1초 / 29.7초 | **294 ms / 756 ms** |
+  | 네트워크 오류(reset·시간 초과) | 345 | **0** |
+  | k6 가상 사용자 | 1,500(한도) | 733 |
+  | 못 보낸 요청 | 9,007 | 1,159 |
+  | 정점 구간 실패 | 30.2% | 29.2%, **모두 바로 온 503**(13,101) |
+
+  영구 설정: `ec2-setup.sh` 가 `/etc/sysctl.d/90-league.conf` 와 `/etc/modules-load.d/nf_conntrack.conf`(부팅 때 모듈이 먼저 올라와야 sysctl 이 먹는다)를 만든다.
+- **지난 측정에도 끼어 있었다.** 커널 로그 시각을 실행과 맞추니 30단계의 12배 실행 전부(바로 거절 "해결" 실행 포함), 31단계의 메모리 실험 세 번과 운영 설정 재측정, 이번 r12 세 번에 `table full` 이 찍혔다(합계 1,703줄). r4·r8 시각에는 없었다. 그래서 보고서에서 "서버 밖(발생기·네트워크)에서 쌓였다"고 적은 시간 초과 7,223·9,312건에는 서버 커널이 버린 연결이 섞여 있다. 보고서 12·13절에 단서를 달았다.
+- **남은 것: 4배에서도 503 이 427건.** 정점 구간 1.98%. 순간 몇 초에 몰려 났다. 초당 480건이면 0.05초만 멈춰도 동시 20 이 넘친다(30단계 steady 의 0.15% 와 같은 성격). 한도 20 이 짧은 멈춤에 빡빡한지는 다음에 본다.
+
+## 왜
+
+- "몰림"은 요청 수만이 아니라 **새 연결 수**의 문제이기도 하다. 계단처럼 오르면 가상 사용자(=연결)가 한꺼번에 생기고, 덜어내기 503 은 연결을 닫아 재연결을 더 만든다. 앱 지표(스레드·커넥션 풀·GC)가 다 멀쩡한데 클라이언트가 수십 초를 기다리면, 앱 앞(접속 대기열, 주소 변환 표, 방화벽)을 본다.
+
+## 외울 것
+
+- **Q. 클라이언트 연결이 3초·7초·15초처럼 끊겨 늦는다. 무엇을 의심하나?** SYN 이 버려져 TCP 가 재시도 간격(1·2·4·8초…)을 기다린 것. 서버에서 `nstat` 의 `ListenOverflows`·`TCPReqQFullDoCookies`(앱 대기열), `dmesg` 의 `nf_conntrack: table full`(주소 변환 표)을 본다. 컨테이너 안 카운터는 `nsenter -t <pid> -n` 으로 그 네트워크 안에서 읽는다.
+- **Q. conntrack 이 무엇이고 왜 Docker 서버에서 중요한가?** 커널 방화벽(netfilter)이 연결마다 상태를 적어 두는 표. Docker 의 포트 공개(-p 80:8080)는 주소 변환(DNAT)이라 이 표가 꼭 필요하다. 작은 인스턴스는 표가 작게 잡히고(여기 7,680), 끊긴 연결도 TIME_WAIT 동안 칸을 차지한다.
+- **Q. 503 을 보내면 연결은 어떻게 되나?** 톰캣은 503(그리고 400·500 등)을 보낸 뒤 연결을 닫는다. 덜어내기가 많이 거절할수록 재연결이 늘어난다. 거절 응답도 비용이 있다.
+- **Q. `accept-count` 는?** 앱이 아직 받아 가지 않은 연결을 운영체제가 쌓아 두는 줄의 길이(listen backlog). 톰캣 기본 100. 커널 상한(`somaxconn`, 여기 4096)보다 크게 잡아도 상한까지만 먹는다.
+
+---
+
+# 33단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2(장 시작 몰림, 덜어내기 뒤) → P9·P10·P11·N3. N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). → 덜어내기 한도 20 이 짧은 멈춤에 빡빡한지(4배에서 503 1.98%) → P9·P10·P11·N3. N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교(선택).** 30단계의 "덜어내기 없음" 실행에는 스왑 GC 멈춤이 끼어 있었다. 메모리를 바로잡은 지금 같은 조건(12배, 덜어내기 끔·켬)을 한 번씩 다시 재면 덜어내기만의 효과를 깨끗하게 볼 수 있다. 다만 덜어내기 없이 12배면 스레드 50개 뒤 접속 대기열에서 줄이 서는 것은 같다.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
@@ -3274,6 +3319,12 @@ SCENARIO=settle LIMITS=10 SETTLE_AGAIN=20 STORM=60 SCALE=2 SERVER_DATE=2026-11-1
 SCENARIO=retry RETRIES=0 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 4m p8-r0   # P8 재전송 없이(평소 → 5배 → 평소)
 SCENARIO=retry RETRIES=2 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 4m p8-r2   # 같은 조건, 2초 시간 초과 뒤 2번까지 재전송
 SCENARIO=retry PEAK=12 RETRIES=0 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 4m p8-12-r0   # 서버가 밀리는 배율까지(초당 1,440건)
+SCENARIO=rush RUSH=12 RUSH_RAMP=1 SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP> 1 2m p2-r12   # P2 장 시작 몰림을 계단처럼(1초 만에 12배)
+P=$(docker inspect -f '{{.State.Pid}}' league-app)             # (서버) 앱 프로세스 번호. 아래 nsenter 에 쓴다(명령은 한 줄씩 붙여 넣는다)
+sudo nsenter -t $P -n nstat -az | grep -iE 'listen|reqq|cookie' # (서버) 컨테이너 안 접속 대기열 넘침·SYN 쿠키(누적)
+sudo nsenter -t $P -n ss -ltn                                  # (서버) 8080 의 접속 대기열 크기(Send-Q)
+sudo dmesg -T | grep -i 'conntrack.*full' | tail                # (서버) 연결 추적 표가 차서 버린 기록
+sudo sysctl net.netfilter.nf_conntrack_count net.netfilter.nf_conntrack_max   # (서버) 연결 추적 표 사용량·크기
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기

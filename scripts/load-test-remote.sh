@@ -67,7 +67,7 @@ START_MS="$(date +%s)000"
 set +e
 (
   K6_WEB_DASHBOARD=true K6_WEB_DASHBOARD_PERIOD=2s K6_WEB_DASHBOARD_EXPORT="$OUT/report.html" "$K6" run -e BASE_URL="$BASE" -e ADMIN_TOKEN="$ADMIN_TOKEN" -e MULT="$MULT" -e DURATION="$DURATION" \
-    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
+    -e STARTS_ON="$TODAY" -e ENDS_ON="$ENDS" -e SUMMARY="$OUT/summary.json" -e SCENARIO="$SCENARIO" -e TICK_ALIGN="${TICK_ALIGN:-1}" -e RTT_MS="$RTT_MS" -e SCALE="${SCALE:-1}" -e LIMITS="${LIMITS:-3}" -e SETTLE_AGAIN="${SETTLE_AGAIN:-0}" -e STORM="${STORM:-30}" -e PEAK="${PEAK:-5}" -e RUSH="${RUSH:-4}" -e RUSH_RAMP="${RUSH_RAMP:-10}" -e TIMEOUT="${TIMEOUT:-2s}" -e RETRIES="${RETRIES:-0}" \
     "$SCRIPT" > "$OUT/k6.log" 2>&1 &
   pid=$!
   ( sleep "$WATCHDOG"; kill -9 "$pid" 2>/dev/null ) & wd=$!

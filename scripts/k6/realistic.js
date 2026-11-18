@@ -1,6 +1,6 @@
 // 6주차③ 실제 사람의 사용 패턴을 흉내 낸 k6 시나리오. 하나씩 고른다: -e SCENARIO=steady|rush|tick|hot|journey|settle|retry
 //   steady  기준선: 평소 속도(주문 1 : 조회 3)를 일정하게. 나머지 시나리오를 이것과 비교한다
-//   rush    장 시작 몰림: 평소 → 4배로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
+//   rush    장 시작 몰림: 평소 → RUSH 배(기본 4)로 30초 → 평소. 몰림이 끝난 뒤 바로 회복하는지
 //   tick    틱 경계 몰림: 10초 폭주 + 50초 한산을 3번. 5분 주기를 60초로 줄였다
 //           서버를 5배속 시계(LEAGUE_CLOCK_SPEED=5)로 띄우면 틱이 실제 매분 30초에 바뀐다. 그래서 폭주를 매분 30초에
 //           맞춰 시작하고, 폭주 1초 뒤 순위 스냅샷을 찍는다(스케줄러 대신) → 가격·순위 캐시 키가 폭주 중에 바뀐다(6주차⑤)
@@ -33,6 +33,9 @@ const RTT_MS = Number(__ENV.RTT_MS || 0);   // 부하 발생기 ↔ 서버 왕�
 const HOT_USERS = Number(__ENV.HOT_USERS || 5);
 const LIMITS = Number(__ENV.LIMITS || 3);         // settle: 사용자마다 걸어 둘 지정가 수
 const PEAK = Number(__ENV.PEAK || 5);              // retry: 최고 배율(평소의 몇 배까지 올릴지)
+// rush: 몰림 배율과 오르는 시간(초). 처음엔 4배·10초로 고정이었다. 실제 장 시작은 한순간에 뛴다 → RUSH_RAMP=1 로 계단처럼(32단계)
+const RUSH = Number(__ENV.RUSH || 4);
+const RUSH_RAMP = Number(__ENV.RUSH_RAMP || 10);
 const TIMEOUT = __ENV.TIMEOUT || '2s';             // retry: 클라이언트가 기다리는 시간
 const RETRIES = Number(__ENV.RETRIES || 0);         // retry: 시간 초과·503 뒤 다시 보내는 횟수(0 = 재전송 없음)
 const SETTLE_AT = 40;                              // settle: 정산을 부르는 시각(초, SCALE 적용 전)
@@ -64,9 +67,9 @@ const SCENARIOS = {
     preAllocatedVUs: 100, maxVUs: 1500,
     stages: [
       { target: NORMAL, duration: sec(30) },       // 평소
-      { target: NORMAL * 4, duration: sec(10) },   // 09:00 몰려듦
-      { target: NORMAL * 4, duration: sec(30) },
-      { target: NORMAL, duration: sec(10) },
+      { target: NORMAL * RUSH, duration: sec(RUSH_RAMP) },   // 09:00 몰려듦
+      { target: NORMAL * RUSH, duration: sec(30) },
+      { target: NORMAL, duration: sec(RUSH_RAMP) },
       { target: NORMAL, duration: sec(40) },       // 회복 구간
     ],
   },
@@ -277,7 +280,7 @@ function elapsed() {
 function phase() {
   if (SCENARIO === 'rush') {
     const t = elapsed();
-    return t < 30 ? 'before' : t < 90 ? 'peak' : 'after';
+    return t < 30 ? 'before' : t < 30 + RUSH_RAMP * 2 + 30 + 10 ? 'peak' : 'after';   // 내려온 뒤 10초까지 peak(밀린 일)
   }
   if (SCENARIO === 'tick') {
     return elapsed() % 60 < 12 ? 'burst' : 'calm';
