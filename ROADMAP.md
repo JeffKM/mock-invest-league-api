@@ -3328,10 +3328,58 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
 ---
 
-# 34단계. 다음 할 일
+# 34단계. P10 트래픽 중 배포 — 끊김 20초는 새 JVM 기동, 클래스 공유로 13초 (6주차⑬)
+
+## 한 일
+
+- **측정 도구 `deploy/p10-deploy.sh`(서버).** 부하가 오면(초당 80건 넘음) 60초 뒤 같은 이미지로 `deploy.sh` 를 돌린다. 0.2초마다 `/actuator/health` 상태 코드(`000` = 연결 거절)와 `docker events`(kill·die·start·health_status)를 남겨, 끊긴 구간이 어느 단계인지 나눈다. k6 는 steady 6분(`SCALE=3`).
+- **첫 측정(11-18 20:27).** 바깥에서 본 끊김 **19.8초**, k6 연결 거절 **2,315건**(초당 120건이 20초 동안 전부).
+
+  | 배포 시작 기준 | 일어난 일 |
+  |---|---|
+  | +0.5초 → +1.1초 | 옛 컨테이너 종료 신호 → 종료. graceful shutdown 은 **0.6초**(처리 중이던 요청만 끝내면 됨) |
+  | +1.5초 → 약 +20.5초 | 새 컨테이너 시작 → 톰캣이 포트를 엶 = **끊긴 구간 전부** |
+  | +21초 → +40초 | 데우기(WarmupRunner 20초). health 는 503 이지만 API 는 받음(덜어내기 503 378건) |
+  | +42.6초 | healthy, `deploy.sh` 끝 |
+
+- **기동 17.5초를 쪼갬(앱 로그).** JVM·런처 2.2초 → 빈 정의·자동 설정 4.8초 → 서블릿 준비 1.6초 → RDS 연결 0.7초 → Flyway 0.2초 → Hibernate 3.5초 → 나머지 빈 5.6초. DB 를 기다린 것은 1초 남짓, 나머지는 클래스를 읽고 초기화하는 CPU 일.
+- **무중단(블루-그린)은 이 서버에 안 맞는다.** 새 JVM 을 먼저 띄우고 넘기려면 JVM 두 개가 동시에 떠야 하는데, 앱 몫 약 600MB 에 한 개가 약 400MB 다(31단계의 스왑·긴 GC 가 돌아온다). 인스턴스를 키우거나 두 대로 늘려야 한다.
+- **해결: 클래스 공유(AppCDS, `Dockerfile`).** 이미지를 만들 때 앱을 한 번 띄워 컨텍스트가 준비되는 순간 끝내고(`-Dspring.context.exit=onRefresh`), 그동안 읽은 클래스를 `app.jsa`(약 110MB)에 저장한다(`-XX:ArchiveClassesAtExit`). 실행은 `java -XX:SharedArchiveFile=app.jsa -jar app.jar`.
+  - jar 를 `--launcher`(풀린 폴더 + JarLauncher) 대신 jar + `lib/` 로 푼다. 클래스 공유는 jar 에서 읽은 클래스만 저장한다.
+  - CI 에는 DB 가 없으므로 그 한 번은 DB 에 붙지 않게 한다: Flyway 끔, `ddl-auto=none`(첫 시도는 운영 설정의 `validate` 가 DB 에 붙으려다 실패했다), `hibernate.boot.allow_jdbc_metadata_access=false`, 방언 지정. 비밀값 자리는 그 줄에서만 쓰는 가짜 값. 연습 실행이 실패하면 이미지 빌드도 실패한다.
+  - 로컬 비교(같은 컨테이너, DB 없이 컨텍스트 준비까지, 3회): JDK 기본 공유 24.5·24.7·30.1초 → 앱 공유 16.6·17.6·20.7초.
+- **재측정(11-18 21:55).**
+
+  | | 전 | 후 |
+  |---|---|---|
+  | 앱 기동(`Started … in`) | 17.5초 | **11.1초** |
+  | 끊김(health `000`) | 19.8초 | **13.1초** |
+  | k6 연결 거절 | 2,315 | **1,532(-34%)** |
+  | healthy 까지 | 42.6초 | 42.4초(데우기 20초가 대부분) |
+  | 힙 밖 메모리(Metaspace) | 188MB(115MB) | **99MB(38MB)** |
+  | 앱 RSS(부하 뒤) | 약 411MB | **362MB**(직접 쓰는 몫 322MB + 공유 파일 40MB, 스왑 0) |
+
+  - 클래스 정보가 공유 파일 영역으로 옮겨 가 힙 밖 메모리가 절반이 됐다. 공유 파일 페이지는 디스크에서 다시 읽으면 되므로 메모리가 모자라면 스왑으로 가지 않고 버려진다.
+  - 대가: 이미지 약 110MB 증가(배포 전에 받아 두므로 끊김과 무관), CI 이미지 빌드 1~2분 증가.
+- **남은 13초는 운영 방침으로.** 주문은 장 시간(9:00~15:30)에만 받으므로 **배포는 장 마감 뒤에 한다**. 그러면 끊김은 조회에만 닿는다.
+
+## 왜
+
+- 서버 한 대는 배포 때 반드시 끊긴다. 끊김을 "어쩔 수 없다"로 두지 않고 단계별로 재서, 줄일 수 있는 부분(기동)과 구조를 바꿔야 하는 부분(두 대·프록시)을 나눴다.
+
+## 외울 것
+
+- **Q. 배포 중 끊김은 어디서 오나?** 옛 프로세스 종료(graceful shutdown) + 새 프로세스 기동 + 포트를 열 때까지. 여기서는 종료 0.6초, 기동 약 19초였다. 재기 전에는 graceful shutdown(최대 20초)이 길 거라 짐작했었다.
+- **Q. AppCDS 는?** JVM 이 클래스를 읽고 검증한 결과를 파일로 저장해 두고 다음 기동 때 그대로 쓰는 기능(Class Data Sharing). JDK 13+ 의 동적 아카이브(`-XX:ArchiveClassesAtExit`), Spring Boot 3.3+ 의 `spring.context.exit=onRefresh` 로 "준비까지만 띄우고 끝내기"를 지원한다. 기동 30% 안팎 단축, 클래스 메타데이터 메모리도 준다.
+- **Q. 무중단 배포의 조건은?** 새 버전이 뜨는 동안 옛 버전이 요청을 받아야 한다 = 두 벌이 동시에 떠 있을 자원(메모리)과 트래픽을 넘길 장치(로드 밸런서·리버스 프록시)가 필요하다. 1GB 서버 한 대에는 둘 다 없다.
+- **Q. readiness 와 포트는 다르다.** 우리 앱은 데우기 동안 health 가 OUT_OF_SERVICE(503)여도 포트는 열려 있어 API 를 받는다. 로드 밸런서가 health 를 보고 트래픽을 넣는 구조라면 데우기가 끝난 뒤에야 받는다.
+
+---
+
+# 35단계. 다음 할 일
 
 - **P6 은 여기서 닫는다(28단계 끝).** ①(work_mem·synchronous_commit)은 더 나빠져 되돌렸고, ②(나눠 찍기)는 SQL 시험판에서 차이가 없어 넣지 않았다. ③ 읽기 복제본·총자산 미리 갱신은 비용 때문에 기록만. 서버의 p6 대회는 `p6-concurrent.sh clean`.
-- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). → P10(트래픽 중 배포) → P9(RDS 재부팅) → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
+- **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). → P9(RDS 재부팅) → P11(CPU 크레딧 소진, `stall-watch.sh` 같이). N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교(선택).** 30단계의 "덜어내기 없음" 실행에는 스왑 GC 멈춤이 끼어 있었다. 메모리를 바로잡은 지금 같은 조건(12배, 덜어내기 끔·켬)을 한 번씩 다시 재면 덜어내기만의 효과를 깨끗하게 볼 수 있다. 다만 덜어내기 없이 12배면 스레드 50개 뒤 접속 대기열에서 줄이 서는 것은 같다.
@@ -3394,6 +3442,8 @@ SCENARIO=soak SERVER_DATE=2026-11-16 scripts/load-test-remote.sh http://<EC2 IP>
 ./stall-watch.sh 2400                                          # (서버) 1초마다 DB 세션·잠금 쥔 쪽·autovacuum, TCP 재전송. 긴 측정과 같이
 export AWS_PAGER=""                                            # (CloudShell) aws 출력이 페이지 화면(:)에서 멈추지 않게
 aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name WriteLatency --dimensions Name=DBInstanceIdentifier,Value=league --start-time <UTC> --end-time <UTC> --period 60 --statistics Maximum --output text   # (CloudShell) RDS 지표 1분 단위
+./p10-deploy.sh 60                                             # (서버) P10 부하 중 같은 이미지로 배포, 끊긴 구간·컨테이너 단계(k6 steady SCALE=3 과 같이)
+docker logs league-app 2>&1 | grep -E "Started MockLeague|\[cds\]"   # (서버) 기동 시간, 클래스 공유 경고
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기
