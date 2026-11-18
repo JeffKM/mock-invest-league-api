@@ -39,16 +39,26 @@ class GlobalExceptionHandlerTest {
 
   @Test
   void 쿼리_도중_DB가_꺼져_롤백까지_실패해도_503() {
-    // 6주차⑭ P9: RDS 재부팅 때 실제로 본 모양. 관리자 종료(57P01) → Hibernate 연결 예외 → 롤백 실패로 감싸임
-    var admin = new SQLException("FATAL: terminating connection due to administrator command", "57P01");
-    var jdbc = new JDBCConnectionException("Unable to commit against JDBC Connection", admin);
-    var rollback = new TransactionSystemException("Could not roll back JPA transaction", new JpaSystemException(new RuntimeException(jdbc)));
+    // 6주차⑭ P9 재측정 때 서버 로그에서 본 그대로의 모양. 원래 오류(57P01)는 롤백 실패에 덮여 사슬에 없다.
+    // (첫 테스트는 원래 오류가 사슬에 남는다고 짐작해 만들었다가 실제 모양을 놓쳤다)
+    var closed = new SQLException("Connection is closed");   // Hikari 가 던지는 것. SQLState 가 없다
+    var tx = new org.hibernate.TransactionException("Unable to rollback against JDBC Connection", closed);
+    var thrown = new JpaSystemException(tx);
 
-    ResponseEntity<ApiResponse<Void>> res = handler.handleUnexpected(rollback);
+    ResponseEntity<ApiResponse<Void>> res = handler.handleUnexpected(thrown);
 
     assertThat(res.getStatusCode().value()).isEqualTo(503);
     assertThat(res.getHeaders().getFirst(HttpHeaders.RETRY_AFTER)).isEqualTo("1");
     assertThat(res.getBody().error().code()).isEqualTo("SERVER_BUSY");
+  }
+
+  @Test
+  void 관리자_종료가_원인_사슬에_남아_있어도_503() {
+    var admin = new SQLException("FATAL: terminating connection due to administrator command", "57P01");
+    var jdbc = new JDBCConnectionException("could not execute statement", admin);
+    var thrown = new TransactionSystemException("Could not commit JPA transaction", new JpaSystemException(new RuntimeException(jdbc)));
+
+    assertThat(handler.handleUnexpected(thrown).getStatusCode().value()).isEqualTo(503);
   }
 
   @Test

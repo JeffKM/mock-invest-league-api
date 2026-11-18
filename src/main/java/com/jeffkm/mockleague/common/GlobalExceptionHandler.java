@@ -92,7 +92,7 @@ public class GlobalExceptionHandler {
       return ResponseEntity.status(status).body(ApiResponse.fail(code, code.defaultMessage()));
     }
     // 6주차⑭ P9: RDS 재부팅 때 쿼리 도중 연결이 끊긴 트랜잭션 10개가 여기까지 와서 500 이 됐다
-    // ("terminating connection due to administrator command", 롤백까지 실패해 다른 예외로 감싸여 온다).
+    // ("terminating connection due to administrator command" 뒤에 롤백까지 실패해, 롤백 실패 예외만 남아 온다).
     // 원인은 커넥션을 못 얻은 경우와 같은 "DB 에 잠깐 닿지 않음"이므로 503 + Retry-After 로 알린다.
     // 주문은 같은 Idempotency-Key 로 다시 보내면 두 번 체결되지 않으므로 재시도해도 안전하다
     Throwable lost = dbUnreachableCause(e);
@@ -109,7 +109,7 @@ public class GlobalExceptionHandler {
    * 예외의 원인 사슬에서 "DB 에 닿지 않음"을 찾는다. 없으면 null.
    * SQLState 08xxx(연결 오류: 08006 은 "I/O error occurred while sending to the backend"),
    * 57P0x(관리자 종료·장애 종료·아직 접속 불가: 57P01 은 "terminating connection due to administrator command"),
-   * 그리고 Hibernate·Spring 이 그것을 감싼 예외들.
+   * 그리고 Hibernate·Spring 이 그것을 감싼 예외들, 연결이 끊겨 롤백·커밋이 실패한 경우.
    */
   static Throwable dbUnreachableCause(Throwable e) {
     Throwable t = e;
@@ -120,6 +120,12 @@ public class GlobalExceptionHandler {
       }
       if (t instanceof JDBCConnectionException || t instanceof SQLTransientConnectionException
           || t instanceof DataAccessResourceFailureException) {
+        return t;
+      }
+      // P9 재측정에서 본 실제 모양: JpaSystemException → TransactionException("Unable to rollback against JDBC Connection")
+      // → SQLException("Connection is closed", SQLState 없음). 원래 오류(57P01)는 롤백 실패에 덮여 사슬에 남지 않는다.
+      // JDBC 연결 위에서 롤백·커밋이 SQL 예외로 실패했다 = 연결이 이미 끊겼다
+      if (t instanceof org.hibernate.TransactionException && t.getCause() instanceof SQLException) {
         return t;
       }
       if (t.getCause() == t) {
