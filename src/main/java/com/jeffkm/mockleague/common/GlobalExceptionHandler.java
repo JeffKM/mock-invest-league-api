@@ -1,8 +1,12 @@
 package com.jeffkm.mockleague.common;
 
+import java.sql.SQLException;
+import java.sql.SQLTransientConnectionException;
+import org.hibernate.exception.JDBCConnectionException;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.NestedRuntimeException;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.dao.OptimisticLockingFailureException;
 import org.springframework.http.HttpHeaders;
@@ -75,9 +79,7 @@ public class GlobalExceptionHandler {
   @ExceptionHandler({CannotCreateTransactionException.class, CannotGetJdbcConnectionException.class})
   public ResponseEntity<ApiResponse<Void>> handleBusy(NestedRuntimeException e) {
     log.warn("DB 커넥션 부족으로 503: {}", e.getMostSpecificCause().getMessage());
-    return ResponseEntity.status(ErrorCode.SERVER_BUSY.status())
-        .header(HttpHeaders.RETRY_AFTER, "1")
-        .body(ApiResponse.fail(ErrorCode.SERVER_BUSY, ErrorCode.SERVER_BUSY.defaultMessage()));
+    return busy();
   }
 
   @ExceptionHandler(Exception.class)
@@ -89,9 +91,48 @@ public class GlobalExceptionHandler {
       ErrorCode code = status.value() == 404 ? ErrorCode.NOT_FOUND : ErrorCode.INVALID_REQUEST;
       return ResponseEntity.status(status).body(ApiResponse.fail(code, code.defaultMessage()));
     }
+    // 6주차⑭ P9: RDS 재부팅 때 쿼리 도중 연결이 끊긴 트랜잭션 10개가 여기까지 와서 500 이 됐다
+    // ("terminating connection due to administrator command", 롤백까지 실패해 다른 예외로 감싸여 온다).
+    // 원인은 커넥션을 못 얻은 경우와 같은 "DB 에 잠깐 닿지 않음"이므로 503 + Retry-After 로 알린다.
+    // 주문은 같은 Idempotency-Key 로 다시 보내면 두 번 체결되지 않으므로 재시도해도 안전하다
+    Throwable lost = dbUnreachableCause(e);
+    if (lost != null) {
+      log.warn("DB 연결 끊김으로 503: {} {}", lost.getClass().getSimpleName(), lost.getMessage());
+      return busy();
+    }
     // 예상하지 못한 오류는 로그로 남기고, 내부 메시지는 응답에 노출하지 않는다
     log.error("처리되지 않은 예외", e);
     return respond(ErrorCode.INTERNAL_ERROR, ErrorCode.INTERNAL_ERROR.defaultMessage());
+  }
+
+  /**
+   * 예외의 원인 사슬에서 "DB 에 닿지 않음"을 찾는다. 없으면 null.
+   * SQLState 08xxx(연결 오류: 08006 은 "I/O error occurred while sending to the backend"),
+   * 57P0x(관리자 종료·장애 종료·아직 접속 불가: 57P01 은 "terminating connection due to administrator command"),
+   * 그리고 Hibernate·Spring 이 그것을 감싼 예외들.
+   */
+  static Throwable dbUnreachableCause(Throwable e) {
+    Throwable t = e;
+    for (int depth = 0; t != null && depth < 20; depth++, t = t.getCause()) {
+      if (t instanceof SQLException sql && sql.getSQLState() != null
+          && (sql.getSQLState().startsWith("08") || sql.getSQLState().startsWith("57P0"))) {
+        return t;
+      }
+      if (t instanceof JDBCConnectionException || t instanceof SQLTransientConnectionException
+          || t instanceof DataAccessResourceFailureException) {
+        return t;
+      }
+      if (t.getCause() == t) {
+        break;
+      }
+    }
+    return null;
+  }
+
+  private static ResponseEntity<ApiResponse<Void>> busy() {
+    return ResponseEntity.status(ErrorCode.SERVER_BUSY.status())
+        .header(HttpHeaders.RETRY_AFTER, "1")
+        .body(ApiResponse.fail(ErrorCode.SERVER_BUSY, ErrorCode.SERVER_BUSY.defaultMessage()));
   }
 
   private static ResponseEntity<ApiResponse<Void>> respond(ErrorCode code, String message) {
