@@ -3510,8 +3510,8 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
   서버 스크립트(`p6-*`·`p7-join.sh`)의 `curl -H "X-Admin-Token: $T"` 도 그 순간 서버의 `ps` 에 보이지만, 서버는 혼자 쓰는 기계라 그대로 둔다.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
-- **크레딧 잔액 경보(36단계).** CloudWatch 경보 `CPUCreditBalance < 50`(5분 평균, 2번 연속) → 메일 알림. 만들면 SNS 구독 확인 메일이 온다.
-- **문서.** 저장소 README 에 사례 요약. 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
+- **크레딧 잔액 경보(36단계) — 만듦(11-19).** CloudWatch 경보 `league-cpu-credit-low`: `CPUCreditBalance` 5분 최솟값이 2번 연속 50 미만이면 SNS 주제 `league-alerts` 로 메일(회복 때도). 메일 구독은 확인 링크를 눌러야 시작된다. 명령은 부록 A.
+- **문서.** 저장소 README 에 운영 서버 사례 12개(처음 본 것 → 원인 → 한 일 → 다시 잰 결과)와 틀렸던 것 4개를 요약함(11-19). 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
 
 ---
 
@@ -3578,6 +3578,9 @@ docker logs league-app --since 20m 2>&1 | grep -A80 "처리되지 않은 예외"
 docker run -d --rm --name burn --cpus 2 alpine sh -c 'yes >/dev/null & yes >/dev/null & sleep 12000'   # (서버) P11 CPU 크레딧을 일부러 소진(시간당 약 108), 끝나면 docker stop burn
 M="--namespace AWS/EC2 --metric-name CPUCreditBalance"         # (CloudShell) 크레딧 잔액. D=Name=InstanceId,Value=<인스턴스 id>, A="--start-time … --end-time … --period 300 --statistics Minimum"
 aws cloudwatch get-metric-statistics $M --dimensions $D $A --output text | sort -k3   # (CloudShell) 위 변수로 잔액(metric-name 을 CPUUtilization 으로 바꾸면 사용률)
+T=$(aws sns create-topic --name league-alerts --query TopicArn --output text)          # (CloudShell) 알림 주제. 이어서 aws sns subscribe --topic-arn $T --protocol email --notification-endpoint <메일> → 확인 링크 클릭
+aws cloudwatch put-metric-alarm --alarm-name league-cpu-credit-low $M --dimensions $D --statistic Minimum --period 300 --evaluation-periods 2 --threshold 50 --comparison-operator LessThanThreshold --alarm-actions $T --ok-actions $T   # (CloudShell) 크레딧 잔액 경보
+aws cloudwatch describe-alarms --alarm-names league-cpu-credit-low --query 'MetricAlarms[].[StateValue,Threshold]' --output text   # (CloudShell) 경보 상태(OK·ALARM·INSUFFICIENT_DATA)
 ./p7-join.sh "1 10 20 50"                                       # (서버) P7 같은 대회 동시 참가(curl 하나로 한꺼번에), 대조군 사용자 생성, DB 대기 0.1초마다
 ./mem-watch.sh 600                                             # (서버) 앱 RSS·스왑·스레드·컨테이너·서버 스왑을 5초마다 600초(부하와 같이)
 P=$(docker inspect -f '{{.State.Pid}}' league-app); grep -E 'VmRSS|VmSwap|Threads' /proc/$P/status   # (서버) 앱 메모리·스왑 한 번 보기
