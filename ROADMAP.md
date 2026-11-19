@@ -3500,7 +3500,15 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
 - **덜어내기 재비교는 37단계에서 닫음**(메모리를 고친 뒤에도 정점 2초 안 성공 1.9배). 서버 `.env` 의 `LEAGUE_SHED_MAX_CONCURRENT=0` 줄은 측정 뒤 지운다.
-- **ADMIN_TOKEN 교체.** 러너가 토큰을 k6 명령줄 인자(`-e ADMIN_TOKEN=…`)로 넘겨, 같은 노트북의 `ps` 에 보인다. 측정이 끝나면 서버 `.env` 의 토큰을 새 값으로 바꾸고, 러너는 환경 변수로 넘기게 고친다.
+- **ADMIN_TOKEN 교체.** 러너가 토큰을 k6 명령줄 인자(`-e ADMIN_TOKEN=…`)로 넘겨, 같은 노트북의 `ps` 에 보인다. 러너는 고쳤다(`export ADMIN_TOKEN` 만 하고 `-e` 로 넘기지 않음. k6 는 셸 환경 변수를 `__ENV` 로 읽는다). 서버 `.env` 의 토큰도 새 값으로 바꾸고 다시 띄웠다(11-19, `printf` 는 셸 내장이라 `ps` 에 안 보인다).
+
+  ```bash
+  sed -i '/^ADMIN_TOKEN=/d' .env
+  printf 'ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" >> .env
+  SKIP_PULL=1 ./deploy.sh "$(cat .deployed-image)"
+  ```
+
+  서버 스크립트(`p6-*`·`p7-join.sh`)의 `curl -H "X-Admin-Token: $T"` 도 그 순간 서버의 `ps` 에 보이지만, 서버는 혼자 쓰는 기계라 그대로 둔다.
 - **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
 - **크레딧 잔액 경보(36단계).** CloudWatch 경보 `CPUCreditBalance < 50`(5분 평균, 2번 연속) → 메일 알림. 만들면 SNS 구독 확인 메일이 온다.
 - **문서.** 저장소 README 에 사례 요약. 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.

@@ -1,6 +1,6 @@
 // 5주차② k6 부하 테스트. docs/01 5절 가정(주문 30 TPS, 조회 90 TPS)의 MULT 배를 "일정한 도착 속도"로 보낸다.
 // constant-arrival-rate: 서버가 느려져도 요청을 덜 보내지 않는다(실제 사용자는 서버 사정을 봐주지 않는다).
-// 실행은 scripts/load-test.sh 가 한다. 직접 돌릴 때: k6 run -e BASE_URL=... -e ADMIN_TOKEN=... scripts/k6/league.js
+// 실행은 scripts/load-test.sh 가 한다. 직접 돌릴 때: ADMIN_TOKEN=... k6 run -e BASE_URL=... scripts/k6/league.js(토큰은 -e 로 넘기지 않는다. 명령줄은 ps 에 보인다)
 import http from 'k6/http';
 import { check, fail } from 'k6';
 
