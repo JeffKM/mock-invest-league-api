@@ -3518,7 +3518,13 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 
   RDS 의 p6 대회(`p6-scale-%`)는 이미 지워져 있었다(11-19 조회 0건, 앞서 돌린 `p6-concurrent.sh clean` 결과).
 - **크레딧 잔액 경보(36단계) — 만듦(11-19).** CloudWatch 경보 `league-cpu-credit-low`: `CPUCreditBalance` 5분 최솟값이 2번 연속 50 미만이면 SNS 주제 `league-alerts` 로 메일(회복 때도). 메일 구독은 확인 링크를 눌러야 시작된다. 명령은 부록 A.
-- **문서.** 저장소 README 에 운영 서버 사례 12개(처음 본 것 → 원인 → 한 일 → 다시 잰 결과)와 틀렸던 것 4개를 요약함(11-19). 이력서 v5·백엔드 포트폴리오(11-19)에는 운영 서버 사례(덜어내기·스왑 GC·연결 추적 표·배포·DB 장애)를 넣고 노트북 시절 줄(JFR 등)을 뺐다. 테스트 190개 통과·라인 커버리지 92.8% 로 다시 쟀다. 프로필 사이트(my-profile-site)는 `redesign` 브랜치에 새로 만들어 두고, 이 저장소를 공개할 때 같이 바꾼다.
+- **문서.** 저장소 README 에 운영 서버 사례 12개(처음 본 것 → 원인 → 한 일 → 다시 잰 결과)와 틀렸던 것 4개를 요약함(11-19). 이력서 v5·백엔드 포트폴리오(11-19)에는 운영 서버 사례(덜어내기·스왑 GC·연결 추적 표·배포·DB 장애)를 넣고 노트북 시절 줄(JFR 등)을 뺐다. 테스트 190개 통과·라인 커버리지 92.8% 로 다시 쟀다. 프로필 사이트(my-profile-site)는 작업 목록 + 이 프로젝트 사례 문서로 새로 만들었다.
+- **공개(11-19).** 공개 전 점검: 커밋 기록 전체에 비밀값(AWS 키·토큰·개인 키) 없음, 지금 파일의 서버 IP·RDS 주소는 자리표시로 바꿈(지난 커밋 3개에는 남김 — 웹 서버 IP 는 원래 공개, RDS 는 외부 접근 차단), `.env.example` 은 자리표시만. 그 뒤 이 저장소를 Public 으로 바꾸고, 프로필 사이트를 https://jeffkm.github.io/my-profile-site/ 에 공개했다. 이력서·포트폴리오 연락처에 사이트 링크를 넣었다.
+
+  ```bash
+  git log --all --format='%h' -G'AKIA[0-9A-Z]{16}'      # 커밋 기록에 비밀값 모양이 들어간 적 있나(값은 안 찍힘)
+  gh repo edit JeffKM/mock-invest-league-api --visibility public --accept-visibility-change-consequences
+  ```
 
 ---
 
