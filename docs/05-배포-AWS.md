@@ -62,7 +62,7 @@ k6(노트북, 한국) ──HTTP:80──▶ EC2 t3.micro (시드니, Docker: le
 - 마스터 사용자 `league`, 자격 증명 관리는 **자체 관리**(Secrets Manager는 따로 요금), 비밀번호는 직접 정해서 비밀번호 관리자에 저장한다
 - 연결: **퍼블릭 액세스 "아니요"**, 보안 그룹은 `league-db`를 넣고 **미리 골라져 있는 `default`를 반드시 뺀다**(9-1절 ①). 향상된 모니터링은 끈다
 - 추가 구성: **초기 데이터베이스 이름 `league`**(비우면 DB가 안 만들어진다), 자동 백업 7일
-- 만든 뒤 "연결 및 보안"에서 **엔드포인트**와 **VPC 보안 그룹이 `league-db` 하나인지** 확인한다(예: `league.xxxx.ap-southeast-2.rds.amazonaws.com`)
+- 만든 뒤 "연결 및 보안"에서 **엔드포인트**와 **VPC 보안 그룹이 `league-db` 하나인지** 확인한다(모양: `league.xxxxxxxxxxxx.ap-southeast-2.rds.amazonaws.com`)
 
 PostgreSQL 15부터 RDS는 기본으로 SSL 연결만 받는다. 그래서 `DB_URL`에 `?sslmode=require`를 붙인다. 테이블은 앱이 처음 뜰 때 Flyway가 만든다.
 
@@ -90,7 +90,7 @@ ssh -i ~/.ssh/league.pem ec2-user@<EC2 공인 IP>
 
 ```bash
 cd /opt/league
-sed -i 's#<RDS 엔드포인트>#league.xxxx.ap-southeast-2.rds.amazonaws.com#' .env
+sed -i 's#<RDS 엔드포인트>#<콘솔에서 복사한 엔드포인트>#' .env
 openssl rand -hex 32     # ADMIN_TOKEN. 비밀번호 관리자에 저장
 nano .env                # DB_PASSWORD, ADMIN_TOKEN 채우기
 ```

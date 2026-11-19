@@ -1,7 +1,7 @@
 #!/bin/bash
 # 배포한 서버에 k6 를 보낸다(로컬 앱을 띄우는 load-test.sh 와 달리 서버는 건드리지 않는다).
 # 사용: ADMIN_TOKEN 을 환경 변수로 준 뒤  scripts/load-test-remote.sh <BASE_URL> [MULT] [DURATION] [LABEL]
-#   예) read -s ADMIN_TOKEN; export ADMIN_TOKEN; scripts/load-test-remote.sh http://3.107.29.43 1 2m laptop
+#   예) read -s ADMIN_TOKEN; export ADMIN_TOKEN; scripts/load-test-remote.sh http://<EC2 IP> 1 2m laptop
 # 노트북(macOS)과 AWS CloudShell(Linux) 양쪽에서 돈다. 결과는 build/k6/remote-<LABEL>-<시각>/
 # SCENARIO=steady|rush|tick|hot|journey 를 주면 realistic.js 의 그 시나리오를 돌린다(비우면 league.js, 예전 기준)
 # realistic.js 시나리오의 길이는 DURATION 이 아니라 SCALE(단계 길이 배율)로 정한다. 예) steady 2분 × SCALE=3 = 6분
