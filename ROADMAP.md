@@ -3499,7 +3499,7 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
 - **다음 시나리오.** P7 은 31단계에서 닫음(원인은 참가 경합이 아니라 스왑된 힙의 GC 멈춤). → P2 는 32단계에서 닫음(장 시작 몰림의 수십 초 지연은 앱이 아니라 커널의 연결 추적 표). 덜어내기 설정도 32단계에서 다시 비교해 지금 값(동시 20, 기다리기 0)을 유지. N3 은 33단계(누수 없음, 가끔 15~26초 DB 멈춤 — 원인 미정, `stall-watch.sh` 로 다음에 잡는다). P10 은 34단계(끊김 19.8 → 13.1초, AppCDS, 배포는 장 마감 뒤). P9 는 35단계(앱에서 본 장애 7~14초, 자동 회복, 500 → 503). P11 은 36단계(크레딧 0 이면 평소 부하도 기준선을 넘어 무너지고 못 돌아옴 → 잔액 경보). 이로써 P1~P11 을 모두 쟀다. 덜어내기 켬·끔은 37단계에서 깨끗한 조건으로 다시 비교. N4(최대 처리량)는 30단계에서 답함(초당 약 1,330건).
 - **서버 커널 설정(32단계).** 지금 서버는 `sysctl -w` 로 넣은 임시값이다. `/etc/sysctl.d/90-league.conf`·`/etc/modules-load.d/nf_conntrack.conf` 를 만들어야 재부팅 뒤에도 남는다(`ec2-setup.sh` 와 같은 내용). 접속 대기열 1024 를 넣은 이미지를 배포하면 `.env` 의 `SERVER_TOMCAT_ACCEPT_COUNT` 줄도 지운다.
 - **서버 `.env` 정리(31단계).** 힙 40%·스레드 50 을 넣은 이미지를 배포한 뒤 `JAVA_TOOL_OPTIONS`·`SERVER_TOMCAT_THREADS_MAX` 줄을 지운다. 측정용 `p7-*` 대회·사용자는 남아 있어도 무해하다.
-- **덜어내기 재비교는 37단계에서 닫음**(메모리를 고친 뒤에도 정점 2초 안 성공 1.9배). 서버 `.env` 의 `LEAGUE_SHED_MAX_CONCURRENT=0` 줄은 측정 뒤 지운다.
+- **덜어내기 재비교는 37단계에서 닫음**(메모리를 고친 뒤에도 정점 2초 안 성공 1.9배). 서버 `.env` 의 `LEAGUE_SHED_MAX_CONCURRENT=0` 줄은 측정 직후 지웠다.
 - **ADMIN_TOKEN 교체.** 러너가 토큰을 k6 명령줄 인자(`-e ADMIN_TOKEN=…`)로 넘겨, 같은 노트북의 `ps` 에 보인다. 러너는 고쳤다(`export ADMIN_TOKEN` 만 하고 `-e` 로 넘기지 않음. k6 는 셸 환경 변수를 `__ENV` 로 읽는다). 서버 `.env` 의 토큰도 새 값으로 바꾸고 다시 띄웠다(11-19, `printf` 는 셸 내장이라 `ps` 에 안 보인다).
 
   ```bash
@@ -3509,9 +3509,16 @@ public boolean preHandle(HttpServletRequest request, HttpServletResponse respons
   ```
 
   서버 스크립트(`p6-*`·`p7-join.sh`)의 `curl -H "X-Admin-Token: $T"` 도 그 순간 서버의 `ps` 에 보이지만, 서버는 혼자 쓰는 기계라 그대로 둔다.
-- **서버 `.env` 정리.** `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT` 줄은 기본값과 같으니 지워도 된다. 측정이 다 끝나면 `LEAGUE_CLOCK_FIXED`·`ACTUATOR_EXPOSE` 도 지우고 다시 배포한다. RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
+- **서버 `.env` 정리 — 함(11-19).** 측정용 줄 `LEAGUE_WARMUP`·`LEAGUE_CACHE_SINGLE_FLIGHT`(기본값과 같음)·`LEAGUE_CLOCK_FIXED`·`LEAGUE_CLOCK_SPEED`·`ACTUATOR_EXPOSE` 를 지우고 다시 띄웠다. 이제 서버는 실제 시계로 돌고(주문은 평일 장 시간만), 바깥에는 `health`·`info` 만 열린다(바깥에서 `/actuator/prometheus` 404 확인). 노트북 Prometheus·Grafana 는 `monitoring/down.sh` 로 껐다(데이터는 볼륨에 남음). 백업은 서버의 `.env.bak-1119`. 다시 부하를 재려면 그 줄들을 되살린다.
+
+  ```bash
+  K='^(LEAGUE_WARMUP|LEAGUE_CACHE_SINGLE_FLIGHT|LEAGUE_CLOCK_FIXED|LEAGUE_CLOCK_SPEED|ACTUATOR_EXPOSE)='
+  sed -i -E "/$K/d" .env && cut -d= -f1 .env    # 남은 키 이름만(값은 안 찍힘)
+  ```
+
+  남은 일: RDS 의 p6 대회는 `p6-cleanup.sql` 로 지운다.
 - **크레딧 잔액 경보(36단계) — 만듦(11-19).** CloudWatch 경보 `league-cpu-credit-low`: `CPUCreditBalance` 5분 최솟값이 2번 연속 50 미만이면 SNS 주제 `league-alerts` 로 메일(회복 때도). 메일 구독은 확인 링크를 눌러야 시작된다. 명령은 부록 A.
-- **문서.** 저장소 README 에 운영 서버 사례 12개(처음 본 것 → 원인 → 한 일 → 다시 잰 결과)와 틀렸던 것 4개를 요약함(11-19). 이력서 v4·백엔드 포트폴리오(2단)에는 P1·콜드 스타트·P3 를 넣었다(2026-11-14). P6 는 재측정 뒤 넣는다.
+- **문서.** 저장소 README 에 운영 서버 사례 12개(처음 본 것 → 원인 → 한 일 → 다시 잰 결과)와 틀렸던 것 4개를 요약함(11-19). 이력서 v5·백엔드 포트폴리오(11-19)에는 운영 서버 사례(덜어내기·스왑 GC·연결 추적 표·배포·DB 장애)를 넣고 노트북 시절 줄(JFR 등)을 뺐다. 테스트 190개 통과·라인 커버리지 92.8% 로 다시 쟀다. 프로필 사이트(my-profile-site)는 `redesign` 브랜치에 새로 만들어 두고, 이 저장소를 공개할 때 같이 바꾼다.
 
 ---
 
