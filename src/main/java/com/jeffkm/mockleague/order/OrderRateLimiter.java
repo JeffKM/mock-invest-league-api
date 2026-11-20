@@ -13,10 +13,10 @@ import java.util.function.LongSupplier;
  * 줄을 서는데, 줄을 선 동안 각자 DB 커넥션을 쥐고 있다. 그때 서버가 잠깐만 멈춰도(측정에서는 매분 AWS 가 CPU 를 가져갔다)
  * 줄이 커넥션 풀 전체로 번졌다. 사람이 낼 수 없는 속도의 주문을 커넥션을 잡기 전에 돌려보내면 줄이 길어질 수 없다.
  *
- * <p>한계: 기록이 이 서버의 메모리에 있다. 서버가 여러 대면 각자 따로 세므로 실제 한도가 대수만큼 커진다.
- * 그때는 Redis 같은 공용 저장소에 둔다.
+ * <p>한계: 기록이 이 서버의 메모리에 있다. 서버가 여러 대면 각자 따로 세므로 실제 한도가 대수만큼 커진다
+ * (RateLimitAcrossServersTest 가 재현한다). 여러 대일 때는 RedisOrderRateLimiter 를 쓴다(7주차①).
  */
-public class OrderRateLimiter {
+public class OrderRateLimiter implements UserRateLimiter {
 
   /** 이 시간 동안 주문이 없던 사용자의 기록은 지운다(메모리가 사용자 수만큼 계속 늘지 않게). */
   private static final long IDLE_NANOS = 60_000_000_000L;
@@ -37,7 +37,7 @@ public class OrderRateLimiter {
     this.nanoTime = nanoTime;
   }
 
-  /** 토큰이 있으면 하나 쓰고 true. 없으면 false(거절). */
+  @Override
   public boolean tryAcquire(long userId) {
     long now = nanoTime.getAsLong();
     if (calls.incrementAndGet() % SWEEP_EVERY == 0) {

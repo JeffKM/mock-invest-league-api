@@ -17,10 +17,10 @@ public class OrderRateLimitInterceptor implements HandlerInterceptor {
 
   static final String USER_HEADER = "X-User-Id";
 
-  private final OrderRateLimiter limiter;
+  private final UserRateLimiter limiter;
   private final Counter rejected;
 
-  public OrderRateLimitInterceptor(OrderRateLimiter limiter, MeterRegistry meters) {
+  public OrderRateLimitInterceptor(UserRateLimiter limiter, MeterRegistry meters) {
     this.limiter = limiter;
     this.rejected = meters.counter("orders.rate_limited");
   }
