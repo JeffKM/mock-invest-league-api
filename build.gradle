@@ -41,6 +41,8 @@ dependencies {
     testImplementation 'org.springframework.boot:spring-boot-testcontainers'
     testImplementation 'org.testcontainers:junit-jupiter'
     testImplementation 'org.testcontainers:postgresql'
+    // 7주차⑤ 시세 푸시 실험: Tomcat(SseEmitter)과 Netty(WebFlux) 비교용. 본 앱은 Tomcat 그대로(테스트 범위만)
+    testImplementation 'org.springframework.boot:spring-boot-starter-webflux'
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher'
 }
 
