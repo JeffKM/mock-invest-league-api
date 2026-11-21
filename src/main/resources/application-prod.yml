@@ -51,6 +51,10 @@ league:
     # 줄이 운영체제 접속 대기열로 옮겨 갔고 더 나빠졌다(최고 구간 실패 55% → 97%). 0 에서는 29%, 회복 즉시(docs/07 12절)
     max-concurrent: ${LEAGUE_SHED_MAX_CONCURRENT:20}
     max-wait: ${LEAGUE_SHED_MAX_WAIT:0ms}
+  alert:
+    # 7주차② 장 마감 뒤 불변식이 어긋나면 Discord 웹훅으로 알린다. 비어 있으면 로그로만 남긴다(주소는 비밀값이라 .env 에만 둔다)
+    # 알림은 비동기, 시간 제한 3초, 동시에 4건까지(넘으면 버리고 alerts{result=dropped} 로 센다). ROADMAP 39단계
+    discord-webhook-url: ${LEAGUE_ALERT_DISCORD_WEBHOOK_URL:}
   warmup:
     # 6주차⑥ 사용자 요청을 받기 전에 자기 자신에게 조회 요청을 보내 JIT 를 미리 돌린다(콜드 스타트). 끝나야 헬스 체크가 UP 이 된다
     enabled: ${LEAGUE_WARMUP:true}

@@ -22,10 +22,12 @@ import org.springframework.stereotype.Component;
 public class ContestScheduler {
 
   private final ContestLifecycleService lifecycleService;
+  private final InvariantAuditJob auditJob;
   private final Clock clock; // 운영 Clock 빈은 한국 시간대(TimeConfig)라 날짜도 한국 기준이다
 
-  public ContestScheduler(ContestLifecycleService lifecycleService, Clock clock) {
+  public ContestScheduler(ContestLifecycleService lifecycleService, InvariantAuditJob auditJob, Clock clock) {
     this.lifecycleService = lifecycleService;
+    this.auditJob = auditJob;
     this.clock = clock;
   }
 
@@ -55,5 +57,11 @@ public class ContestScheduler {
   @Scheduled(cron = "0 40 15 * * *", zone = "Asia/Seoul")
   public void afterClose() {
     lifecycleService.runDaily(LocalDate.now(clock));
+  }
+
+  /** 7주차② 장 마감 배치(15:40) 뒤에 불변식을 검사하고, 어긋났으면 알린다. 알림은 비동기라 이 스레드를 붙잡지 않는다. */
+  @Scheduled(cron = "0 45 15 * * *", zone = "Asia/Seoul")
+  public void auditInvariants() {
+    auditJob.auditRunning();
   }
 }
