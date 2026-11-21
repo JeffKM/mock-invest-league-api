@@ -1,1 +1,3 @@
 rootProject.name = 'mock-invest-league-api'
+// 7주차⑤ 시세 푸시 서버(WebFlux + Netty). 본 API 와 따로 뜨고 Redis pub/sub 으로 받는다(docs/08)
+include 'push'

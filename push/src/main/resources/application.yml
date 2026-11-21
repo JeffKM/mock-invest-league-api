@@ -1,0 +1,21 @@
+# 시세 푸시 서버(7주차⑤). 본 API 와 같은 Redis 를 본다
+server:
+  port: ${PORT:8081}
+spring:
+  application:
+    name: league-push
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: ${REDIS_PORT:6379}
+league:
+  push:
+    # 연결 수 상한. 연결 하나가 힙 약 13KB(ROADMAP 43단계). 넘으면 503 으로 받지 않는다
+    max-connections: ${PUSH_MAX_CONNECTIONS:10000}
+    buffer: 16          # 느린 연결마다 쌓아 둘 최근 메시지 수. 넘치면 오래된 것부터 버린다
+    heartbeat: 15s
+management:
+  endpoints:
+    web:
+      exposure:
+        include: ${ACTUATOR_EXPOSE:health,info}

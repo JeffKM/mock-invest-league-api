@@ -5,6 +5,7 @@ import com.jeffkm.mockleague.common.ErrorCode;
 import com.jeffkm.mockleague.market.PriceGenerationService;
 import com.jeffkm.mockleague.order.LimitOrderExecutor;
 import com.jeffkm.mockleague.order.LimitOrderSettlementService;
+import com.jeffkm.mockleague.push.TickBroadcaster;
 import com.jeffkm.mockleague.ranking.RankingService;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -40,10 +41,12 @@ public class ContestLifecycleService {
   private final LimitOrderSettlementService settlementService;
   private final RankingService rankingService;
   private final TransactionTemplate tx;
+  private final TickBroadcaster tickBroadcaster;
 
   public ContestLifecycleService(ContestRepository contestRepository, ContestService contestService,
       PriceGenerationService priceGenerationService, LimitOrderSettlementService settlementService,
-      RankingService rankingService, TransactionTemplate tx) {
+      RankingService rankingService, TransactionTemplate tx, TickBroadcaster tickBroadcaster) {
+    this.tickBroadcaster = tickBroadcaster;
     this.settlementService = settlementService;
     this.rankingService = rankingService;
     this.contestRepository = contestRepository;
@@ -101,7 +104,7 @@ public class ContestLifecycleService {
     if (c.getStatus() != ContestStatus.RUNNING) {
       throw new BusinessException(ErrorCode.CONTEST_NOT_RUNNING);
     }
-    return c.latestVisibleTick(now).map(at -> rankingService.takeSnapshot(c.getId(), at)).orElse(false);
+    return c.latestVisibleTick(now).map(at -> snapshotAndBroadcast(c, at)).orElse(false);
   }
 
   /**
@@ -118,7 +121,16 @@ public class ContestLifecycleService {
   }
 
   private void snapshot(Contest c, LocalDateTime now) {
-    c.latestVisibleTick(now).ifPresent(at -> rankingService.takeSnapshot(c.getId(), at));
+    c.latestVisibleTick(now).ifPresent(at -> snapshotAndBroadcast(c, at));
+  }
+
+  /** 새 틱의 스냅샷을 찍었을 때만 푸시한다(같은 틱을 다시 부르면 둘 다 건너뛴다). 푸시는 실패해도 던지지 않는다. */
+  private boolean snapshotAndBroadcast(Contest c, TickPosition at) {
+    boolean taken = rankingService.takeSnapshot(c.getId(), at);
+    if (taken) {
+      tickBroadcaster.broadcast(c.getId(), at);
+    }
+    return taken;
   }
 
   private void safely(Contest c, String what, Runnable work) {
