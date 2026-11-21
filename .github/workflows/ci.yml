@@ -46,6 +46,12 @@ jobs:
           docker build -t mock-invest-league-api:${{ github.sha }}
           --label org.opencontainers.image.source=https://github.com/${{ github.repository }} .
 
+      - name: 푸시 서버 이미지 빌드 확인
+        # 7주차⑤ 시세 푸시 서버(push/, Netty). jar 는 위 bootJar 가 함께 만든다
+        run: >
+          docker build -t league-push:${{ github.sha }}
+          --label org.opencontainers.image.source=https://github.com/${{ github.repository }} push/
+
       # 7주차③ 성능 회귀 게이트(ROADMAP 40단계). 실패율·불변식·느슨한 지연에 더해 "요청당 DB 문장 수"를 기준값과 비교한다.
       # 이미지를 올리기 전에 둔다: 쿼리를 더 부르게 된 이미지는 서버로 가지 않는다
       - name: 성능 스모크(k6)
@@ -68,4 +74,6 @@ jobs:
           # latest 는 쓰지 않는다. 커밋 sha 태그만 올려 "지금 서버에 뜬 코드"와 "되돌릴 곳"을 정확히 가리킨다
           docker tag mock-invest-league-api:${{ github.sha }} "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:${{ github.sha }}"
-          echo "올린 이미지: $IMAGE:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"
+          docker tag league-push:${{ github.sha }} "$IMAGE-push:${{ github.sha }}"
+          docker push "$IMAGE-push:${{ github.sha }}"
+          echo "올린 이미지: $IMAGE:${{ github.sha }}, $IMAGE-push:${{ github.sha }}" >> "$GITHUB_STEP_SUMMARY"

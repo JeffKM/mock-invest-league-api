@@ -1,5 +1,6 @@
 # 5주차② 운영용 compose. EC2 한 대의 /opt/league 에 이 파일과 .env, deploy.sh 를 둔다.
-# DB 는 RDS(PostgreSQL)라 여기에 없다. 캐시는 서버 메모리(caffeine)라 Redis 도 없다(19단계: 서버가 한 대면 충분).
+# DB 는 RDS(PostgreSQL)라 여기에 없다. 캐시는 서버 메모리(caffeine)다(19단계: 서버가 한 대면 충분).
+# 7주차⑤(ROADMAP 45단계): 시세 푸시 서버(push, Netty)와 둘을 잇는 Redis(pub/sub 전용, 저장 안 함)를 더했다.
 services:
   app:
     image: ${IMAGE:?IMAGE 가 비었습니다. deploy.sh 로 띄우세요}
@@ -7,6 +8,9 @@ services:
     env_file: .env
     environment:
       SPRING_PROFILES_ACTIVE: prod
+      LEAGUE_PUSH_ENABLED: "true"   # 새 틱 스냅샷마다 시세·순위를 Redis 채널로 보낸다. 실패해도 스냅샷은 그대로 끝난다
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
     ports:
       - "${HOST_PORT:-80}:8080"  # 바깥에서는 http://<EC2 주소>/ 로 들어온다(로컬 리허설은 HOST_PORT 로 바꾼다)
     restart: unless-stopped  # 서버가 재부팅되거나 앱이 죽으면 다시 띄운다
@@ -16,4 +20,31 @@ services:
       driver: json-file
       options:
         max-size: "10m"      # 로그가 디스크를 다 채우지 않게 10MB × 3개에서 돌려 쓴다
+        max-file: "3"
+
+  # 7주차⑤ 본 API → 푸시 서버를 잇는 pub/sub 전용. 저장하지 않는다(시세는 다음 틱에 새로 온다). 바깥에 열지 않는다
+  redis:
+    image: redis:7-alpine
+    container_name: league-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no", "--maxmemory", "16mb", "--maxmemory-policy", "allkeys-lru"]
+    restart: unless-stopped
+    mem_limit: 32m
+
+  # 7주차⑤ 시세 푸시 서버(Netty). GET http://<EC2 주소>:8081/contests/{id}/stream (SSE)
+  push:
+    image: ${PUSH_IMAGE:?PUSH_IMAGE 가 비었습니다. deploy.sh 로 띄우세요}
+    container_name: league-push
+    environment:
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      # 256MB(힙 128MB)에서 연결 2,000 은 방송 지연 p99 0.5초, 3,000 부터 GC 로 15초 넘게 튀었다(45단계). 넘으면 503
+      PUSH_MAX_CONNECTIONS: "2000"
+    ports:
+      - "8081:8081"
+    restart: unless-stopped
+    mem_limit: 256m          # 서버 913MB = OS·Docker 약 130 + 본 API 최대 451 + 푸시 + Redis. 남는 몫에 맞췄다
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
         max-file: "3"

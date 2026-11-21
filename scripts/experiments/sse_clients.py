@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """7주차⑤ SSE 방송 실험의 클라이언트. 서버와 다른 프로세스로 돌려 서버 힙 측정에 섞이지 않게 한다.
 
-사용: python3 -I sse_clients.py <포트> <정상 연결 수> <느린 연결 수> <결과 JSON 경로>
+사용: python3 -I sse_clients.py <포트> <정상 연결 수> <느린 연결 수> <결과 JSON 경로> [경로=/sse]
   정상 연결: 계속 읽으며, 방송마다 "서버가 방송을 시작한 시각 → 내가 받은 시각" 지연을 잰다.
   느린 연결: 수신 버퍼를 4KB 로 작게 잡고 아무것도 읽지 않는다(신호가 약한 휴대폰, 멈춘 앱).
 표준 입력이 닫히면(서버 쪽 테스트가 끝나면) 결과를 쓰고 끝난다.
@@ -14,11 +14,12 @@ import sys
 import time
 
 port, normal, slow, out = int(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+path = sys.argv[5] if len(sys.argv) > 5 else '/sse'
 soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
 resource.setrlimit(resource.RLIMIT_NOFILE, (min(hard, 65536), hard))
 
 # HTTP/1.0: 응답이 청크로 쪼개지지 않게(1.1 에서는 Spring 이 "data:"·본문·줄바꿈을 따로 써 줄이 청크 크기 줄과 섞였다)
-REQUEST = f'GET /sse HTTP/1.0\r\nHost: localhost:{port}\r\nAccept: text/event-stream\r\n\r\n'.encode()
+REQUEST = f'GET {path} HTTP/1.0\r\nHost: localhost:{port}\r\nAccept: text/event-stream\r\n\r\n'.encode()
 latency = {}        # 방송 번호 → [받은 지연(ms)...]
 connected = [0, 0]  # 정상, 느림
 failed = [0]
@@ -38,6 +39,8 @@ async def normal_client():
             if line.startswith(b'data:'):
                 now = time.time() * 1000
                 msg = json.loads(line[5:])
+                if 'id' not in msg:
+                    continue
                 latency.setdefault(msg['id'], []).append(now - msg['sentAt'])
     except OSError:
         failed[0] += 1
