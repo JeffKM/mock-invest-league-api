@@ -46,6 +46,18 @@ jobs:
           docker build -t mock-invest-league-api:${{ github.sha }}
           --label org.opencontainers.image.source=https://github.com/${{ github.repository }} .
 
+      # 7주차③ 성능 회귀 게이트(ROADMAP 40단계). 실패율·불변식·느슨한 지연에 더해 "요청당 DB 문장 수"를 기준값과 비교한다.
+      # 이미지를 올리기 전에 둔다: 쿼리를 더 부르게 된 이미지는 서버로 가지 않는다
+      - name: 성능 스모크(k6)
+        run: ./scripts/perf-smoke.sh mock-invest-league-api:${{ github.sha }}
+
+      - name: 성능 스모크 결과 올리기(실패해도)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-smoke
+          path: build/k6/smoke
+
       - name: 이미지 올리기(main 에 올렸을 때만)
         if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
